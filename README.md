@@ -1,6 +1,7 @@
-# OpenCodeGo 用量助手（油猴脚本）v0.9.5
+# OpenCodeGo 用量助手（油猴脚本）v0.9.6
 
 在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
+
 - RPC 与页面一致：`POST /_server`，参数走 seroval JSON body（`X-Server-Id` / `X-Server-Instance` 头）。
 - 内容指纹去重：`请求时间 + 输入/输出/推理/缓存读(+缓存写/模型/费用)` 相同 => 同一条记录。
 - 持久历史（IndexedDB，**无过期**，仅手动清空）；历史完整时全量拉取**命中历史即停止翻页**，历史不完整时翻到底并标记完整。
@@ -10,6 +11,7 @@
 
 **v0.9.x（近期）**
 
+> v0.9.6 变更：界面重绘为深色终端风格（黑银灰配色、网格背景、终端窗口头部圆点、白色高亮），与 `OpenCodeGo-Dashboard-banner.svg` 风格统一；banner 内容同步更新为贴合项目（全量用量/分析/缓存命中率/费用）。
 > v0.9.5 变更：分析完成状态与历史状态的时间统一为 24 小时制 `yyyy/MM/dd HH:mm:ss`；状态栏不再追加“持久历史（全量抓取于…）”说明，历史状态行去掉“用量[持久]”前缀（不完整时仍保留“用量[不完整]”）。
 > v0.9.4 变更：数据页“按模型”表格新增每模型的**缓存命中率**列（缓存读 / (新输入 + 缓存读)）。
 > v0.9.3 变更：修复“历史不完整”误报——历史不完整时“拉取全量用量/拉取最新并分析”会继续翻到底并标记完整，不再因命中历史提前停止；历史写入串行化，避免页面捕获与全量拉取并发时把完整标记降级；修复小面板下状态文字与历史状态重叠。
@@ -25,13 +27,14 @@
 
 ## 文件
 
-| 文件 | 说明 |
-| --- | --- |
-| `opencodego-dashboard.user.js` | 油猴主脚本（自包含） |
-| `seroval-core.cjs` | seroval 编解码核心（Node 可测，与 user.js 内联一致） |
-| `test-seroval-core.cjs` | Node 单元测试 |
-| `test-userscript.py` | Playwright 端到端冒烟测试 |
-| `README.md` | 本说明 |
+| 文件                             | 说明                                                 |
+| -------------------------------- | ---------------------------------------------------- |
+| `opencodego-dashboard.user.js` | 油猴主脚本（自包含）                                 |
+| `seroval-core.cjs`             | seroval 编解码核心（Node 可测，与 user.js 内联一致） |
+| `test-seroval-core.cjs`        | Node 单元测试                                        |
+| `test-userscript.py`           | Playwright 端到端冒烟测试                            |
+| `OpenCodeGo-Dashboard-banner.svg` | GitHub README 横幅（深色终端风格，含动画） |
+| `README.md`                    | 本说明                                               |
 
 ## 安装
 
