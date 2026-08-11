@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.2 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.3 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -169,7 +169,8 @@ def main():
         assert u["count"] == 50 and u["meta"]["complete"] is True, u
         print("A OK: 1 request, 50 merged, complete")
 
-        # Scenario B: incomplete history -> still early stop + stop button visible during slow request
+        # Scenario B (v0.9.3): incomplete history -> full fetch pages to the end and marks complete
+        # (no early "hit history" stop when history is incomplete, so no false 不完整 warning)
         page.evaluate(
             """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: false }); }""",
             {"ws": WS, "a": REC["A"], "b": REC["B"]},
@@ -178,13 +179,14 @@ def main():
         page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
         page.wait_for_timeout(800)
         assert page.locator("#ocgo-btn-stop").is_visible(), "stop button should be visible while task running"
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('历史不完整')", timeout=30000)
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=30000)
         SLOW[0] = False
         u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
-        assert len(usage_requests) == 2, usage_requests
-        assert u["count"] == 50 and u["meta"]["complete"] is False, u
+        assert len(usage_requests) == 3, usage_requests  # A:1 + B: page0 + page1
+        assert u["count"] == 50 and u["meta"]["complete"] is True, u
         assert not page.locator("#ocgo-btn-stop").is_visible()
-        print("B OK: 1 request, 50 merged, complete=False, stop hidden")
+        assert "不完整" not in page.locator("#ocgo-history-state").text_content(), page.locator("#ocgo-history-state").text_content()
+        print("B OK: full fetch from incomplete history -> 2 requests, 50 merged, complete=True, no false warning")
 
         # History tab: seed cache (50 rows from scenario A) then render usage history table
         page.evaluate(

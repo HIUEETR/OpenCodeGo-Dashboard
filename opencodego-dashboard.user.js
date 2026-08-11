@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.2
+// @version      0.9.3
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -689,24 +689,32 @@
   }
   function usageMetaKey(ws) { return "usage:meta:" + ws; }
 
-  // 合并写入：捕获/单页数据也调用；onlyFullFetch 为 true 时才刷新 lastFullFetchAt/complete
+  // 合并写入：捕获/单页数据也调用；onlyFullFetch 为 true 时才刷新 lastFullFetchAt/complete。
+  // 写入串行化：页面捕获（full:false）与全量拉取（full:true）可能并发触发，
+  // 若不串行化，后到的捕获写入会基于旧 meta 把 complete/lastFullFetchAt 降级。
+  let cacheWriteChain = Promise.resolve();
   async function cacheUsage(ws, records, opts) {
     opts = opts || {};
     if (!Array.isArray(records) || !records.length) return;
-    const prevMeta = await IDB.get(usageMetaKey(ws));
-    let all = (await IDB.get(usageCacheKey(ws))) || [];
-    const byFp = new Map(all.map((r) => [usageFingerprint(r), r]));
-    for (const r of records) if (r && usageFingerprint(r)) byFp.set(usageFingerprint(r), r);
-    const merged = Array.from(byFp.values());
-    await IDB.put(usageCacheKey(ws), merged);
-    const meta = {
-      lastFullFetchAt: opts.full ? Date.now() : (prevMeta && prevMeta.lastFullFetchAt) || null,
-      lastUpdatedAt: Date.now(),
-      count: merged.length,
-      complete: opts.full ? true : !!(prevMeta && prevMeta.complete),
+    const run = async () => {
+      const prevMeta = await IDB.get(usageMetaKey(ws));
+      let all = (await IDB.get(usageCacheKey(ws))) || [];
+      const byFp = new Map(all.map((r) => [usageFingerprint(r), r]));
+      for (const r of records) if (r && usageFingerprint(r)) byFp.set(usageFingerprint(r), r);
+      const merged = Array.from(byFp.values());
+      await IDB.put(usageCacheKey(ws), merged);
+      const meta = {
+        lastFullFetchAt: opts.full ? Date.now() : (prevMeta && prevMeta.lastFullFetchAt) || null,
+        lastUpdatedAt: Date.now(),
+        count: merged.length,
+        complete: opts.full ? true : !!(prevMeta && prevMeta.complete),
+      };
+      await IDB.put(usageMetaKey(ws), meta);
+      return { records: merged, meta };
     };
-    await IDB.put(usageMetaKey(ws), meta);
-    return { records: merged, meta };
+    const p = cacheWriteChain.then(run, run);
+    cacheWriteChain = p.then(() => {}, () => {});
+    return p;
   }
 
   async function loadUsage(ws) {
@@ -888,8 +896,8 @@
       }
       if (onProgress) onProgress({ page: page + 1, fetched: merged.length, added, hitHistory });
       if (rows.length < PAGE_SIZE) { reachedEnd = true; page++; break; }
-      // 有历史重合即停止翻页，不再请求后续页
-      if (hitHistory > 0) {
+      // 仅当历史已完整时才“命中历史即停止”；历史不完整时继续翻到底，才能标记完整
+      if (hitHistory > 0 && prevComplete) {
         stoppedAtHistory = true;
         break;
       }
@@ -1103,6 +1111,8 @@
 #ocgo-body{padding:8px 10px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:8px;}
 .ocgo-tab{display:none;flex-direction:column;gap:8px;flex:1;min-height:0;}
 .ocgo-tab.ocgo-active{display:flex;}
+#ocgo-tab-data,#ocgo-tab-history{overflow:auto;}
+#ocgo-tab-data > *,#ocgo-tab-history > *{flex-shrink:0;}
 #ocgo-tab-log{overflow:hidden;}
 #ocgo-ws-row{display:flex;gap:6px;align-items:center;}
 #ocgo-ws{flex:1;background:#1c2128;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:4px 6px;}
@@ -1117,7 +1127,7 @@
 #ocgo-range select,#ocgo-range input,#ocgo-custom-range input{background:#1c2128;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:4px 6px;}
 #ocgo-custom-range{display:none;gap:6px;align-items:center;flex-wrap:wrap;}
 #ocgo-custom-range.ocgo-show{display:flex;}
-#ocgo-analysis{background:#0d1117;border:1px solid #333;border-radius:6px;padding:8px;max-height:420px;overflow:auto;}
+#ocgo-analysis{background:#0d1117;border:1px solid #333;border-radius:6px;padding:8px;flex:1 1 auto;min-height:80px;max-height:420px;overflow:auto;}
 #ocgo-analysis h4{margin:8px 0 4px;color:#58a6ff;}
 .ocgo-metrics{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
 .ocgo-metric{flex:1 1 90px;background:#161b22;border:1px solid #333;border-radius:6px;padding:6px;text-align:center;}
@@ -1689,7 +1699,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.2", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.3", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1716,7 +1726,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.2",
+    version: "0.9.3",
     cacheUsage,
     loadUsage,
     assessUsageCache,
