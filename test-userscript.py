@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.4.3 (mostly offline via route interception)."""
+"""End-to-end tests for userscript v0.6.0 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -42,6 +42,16 @@ def seroval_response(records):
     return (";0x%08x;" % len(b)).encode("utf-8") + b
 
 
+def goto_retry(page, url):
+    for attempt in range(4):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            return
+        except Exception as e:
+            print(f"goto attempt {attempt + 1} failed: {str(e)[:80]}; retrying...")
+            _time.sleep(5)
+
+
 def main():
     usage_requests = []
     SLOW = [False]
@@ -68,20 +78,14 @@ def main():
             if SLOW[0]:
                 _time.sleep(2.5)
             if page_num == 0:
-                data = seroval_response(PAGE0_NEW + [REC["B"], REC["A"]])  # 满50条：48新 + 2历史
+                data = seroval_response(PAGE0_NEW + [REC["B"], REC["A"]])
             else:
                 data = seroval_response([REC["B"], REC["A"]])
             route.fulfill(status=200, content_type="text/javascript", body=data)
 
         page.route("**/_server", handle_route)
 
-        for attempt in range(4):
-            try:
-                page.goto("https://opencode.ai/go", wait_until="domcontentloaded", timeout=60000)
-                break
-            except Exception as e:
-                print(f"goto attempt {attempt + 1} failed: {str(e)[:80]}; retrying...")
-                _time.sleep(5)
+        goto_retry(page, "https://opencode.ai/go")
         page.wait_for_timeout(3000)
 
         fab = page.locator("#ocgo-fab")
@@ -91,28 +95,32 @@ def main():
             fab.click()
             page.wait_for_timeout(300)
 
+        # v0.6.0: tabs merged to 数据/日志 only; no Keys button; has 打开用量页面
+        tab_names = page.locator("#ocgo-tabs button").all_text_contents()
+        print("tabs:", tab_names)
+        assert tab_names == ["数据", "日志"], tab_names
+        assert page.locator("#ocgo-btns button", has_text="Keys").count() == 0
+        assert page.locator("#ocgo-btns button", has_text="打开用量页面").count() == 1
+        assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
+        print("UI merge OK: tabs=数据/日志, no Keys, open-view button present")
+
         page.evaluate(
             """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
                        o.value = ws; o.text = "TEST (" + ws + ")"; s.appendChild(o); s.value = ws; }""", WS)
 
-        stop_btn = page.locator("#ocgo-btn-stop")
-
-        # ---- Scenario A: complete history -> early stop after page 0, complete stays true
+        # Scenario A: complete history -> early stop after page 0
         page.evaluate(
             """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
             {"ws": WS, "a": REC["A"], "b": REC["B"]},
         )
         page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
         page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('命中历史')", timeout=30000)
-        status = page.locator("#ocgo-status").text_content()
-        print("A status:", status)
         u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
         assert len(usage_requests) == 1, usage_requests
-        assert u["count"] == 50, u
-        assert u["meta"]["complete"] is True, u
+        assert u["count"] == 50 and u["meta"]["complete"] is True, u
         print("A OK: 1 request, 50 merged, complete")
 
-        # ---- Scenario B: incomplete history -> still early stop, complete stays False + stop button visible during slow request
+        # Scenario B: incomplete history -> still early stop + stop button visible during slow request
         page.evaluate(
             """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: false }); }""",
             {"ws": WS, "a": REC["A"], "b": REC["B"]},
@@ -120,18 +128,33 @@ def main():
         SLOW[0] = True
         page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
         page.wait_for_timeout(800)
-        assert stop_btn.is_visible(), "stop button should be visible while task running"
-        print("B: stop button visible during task OK")
+        assert page.locator("#ocgo-btn-stop").is_visible(), "stop button should be visible while task running"
         page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('历史不完整')", timeout=30000)
         SLOW[0] = False
-        status = page.locator("#ocgo-status").text_content()
-        print("B status:", status)
         u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
         assert len(usage_requests) == 2, usage_requests
-        assert u["count"] == 50, u
-        assert u["meta"]["complete"] is False, u
-        assert not stop_btn.is_visible(), "stop button should be hidden after task finished"
+        assert u["count"] == 50 and u["meta"]["complete"] is False, u
+        assert not page.locator("#ocgo-btn-stop").is_visible()
         print("B OK: 1 request, 50 merged, complete=False, stop hidden")
+
+        # Usage view page: seed full cache then open #ocgo=usage&ws=
+        page.evaluate(
+            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
+            {"ws": WS, "a": REC["A"], "b": REC["B"]},
+        )
+        view = ctx.new_page()
+        view.on("pageerror", lambda e: errors.append("view pageerror: " + str(e)))
+        goto_retry(view, "https://opencode.ai/go#ocgo=usage&ws=" + WS)
+        view.wait_for_timeout(3000)
+        assert view.locator("#ocgo-usage-view").is_visible(), "usage view not rendered"
+        view.wait_for_function("() => (document.querySelector('#ocgo-view-analysis').textContent || '').includes('缓存命中率')", timeout=15000)
+        vtext = view.locator("#ocgo-view-analysis").text_content()
+        assert "按模型" in vtext and "deepseek-v4-flash" in vtext, vtext[:200]
+        vstatus = view.locator("#ocgo-view-status").text_content()
+        print("view status:", vstatus)
+        assert "缓存 2 条" in vstatus, vstatus
+        print("usage view OK: formatted metrics rendered from cache")
+        view.close()
 
         browser.close()
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.5.0
+// @version      0.6.0
 // @description  查询 OpenCode Go 套餐/用量/API调用记录；全量分页(可停止/防重复/互斥)+IndexedDB缓存(含完整度与TTL认定)；用量分析页；日志与开关。
 // @author       codex
 // @match        https://opencode.ai/*
@@ -370,7 +370,6 @@
     ].map((v) => (v === null || v === undefined ? "" : v)).join("|");
   }
   function usageMetaKey(ws) { return "usage:meta:" + ws; }
-  function snapshotKey(name, ws) { return "snap:" + name + ":" + ws; }
 
   // 合并写入：捕获/单页数据也调用；onlyFullFetch 为 true 时才刷新 lastFullFetchAt/complete
   async function cacheUsage(ws, records, opts) {
@@ -399,13 +398,6 @@
     return { records, meta };
   }
 
-  async function cacheSnapshot(name, ws, data) {
-    await IDB.put(snapshotKey(name, ws), { t: Date.now(), data });
-    debug("cache", "快照缓存 " + name + " " + ws);
-  }
-  async function loadSnapshot(name, ws) {
-    return await IDB.get(snapshotKey(name, ws));
-  }
 
   async function clearCache() {
     const keys = await IDB.keysWithPrefix("");
@@ -420,7 +412,6 @@
     // usage.list：bfd684bf 是 usage 页面真正的分页函数（参数 [ws, page]）。
     // 注意 6262ba54 是同名的 NewUserSection 查询（只传 [ws]，不能翻页），不要用。
     "usage.list": "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c",
-    "key.list": "c22cd964237ba79f2f9b95faa2a14b804f870d1bab49279463379cc6a0fd0c85",
   };
   function buildNameById() {
     const m = {};
@@ -670,8 +661,6 @@
             }
             for (const [wid, rows] of byWs) cacheUsage(wid, rows, { full: false }).catch(() => {});
             if (ws) cacheUsage(ws, data, { full: false }).catch(() => {});
-          } else if (name && ws && ["key.list"].includes(name)) {
-            cacheSnapshot(name, ws, data).catch(() => {});
           }
         }).catch(() => {});
       }).catch(() => {});
@@ -837,6 +826,17 @@
 .ocgo-log.ocgo-warn .ocgo-lv{color:#d29922;}
 .ocgo-log.ocgo-error .ocgo-lv{color:#f85149;}
 #ocgo-stats{color:#8b949e;font-size:11px;}
+#ocgo-usage-view{position:fixed;inset:0;z-index:2147483647;background:#0d1117;color:#e6e6e6;overflow:auto;
+  padding:16px 20px 40px;font:13px/1.6 -apple-system,"Segoe UI",sans-serif;}
+#ocgo-usage-view .ocgo-view-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;
+  position:sticky;top:0;background:#0d1117;padding:10px 0;z-index:2;border-bottom:1px solid #21262d;}
+#ocgo-usage-view select,#ocgo-usage-view input,#ocgo-usage-view button{background:#1c2128;color:#e6e6e6;
+  border:1px solid #3a3f47;border-radius:6px;padding:5px 8px;cursor:pointer;}
+#ocgo-usage-view button:hover{background:#2a3038;}
+#ocgo-usage-view .ocgo-view-body{max-width:1200px;margin:0 auto;}
+#ocgo-view-status{color:#8b949e;margin:6px 0;}
+#ocgo-view-custom{display:none;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
+#ocgo-view-custom.ocgo-show{display:flex;}
 `;
   }
 
@@ -890,10 +890,6 @@
     if (ws) {
       const a = await assessUsageCache(ws);
       if (a.state !== "none") parts.push("用量[" + (a.state === "ok" ? "持久" : "不完整") + "] " + a.meta.count + "条 @" + fmtTime(a.meta.lastUpdatedAt));
-      for (const name of ["key.list"]) {
-        const s = await loadSnapshot(name, ws);
-        if (s) parts.push(name + " @" + fmtTime(s.t));
-      }
     }
     ui.cacheState.textContent = parts.length ? "缓存：" + parts.join("；") : "缓存：无（拉取后自动缓存）";
   }
@@ -967,6 +963,126 @@
   }
   function downloadJson(name, obj) { downloadText(name + "-" + Date.now() + ".json", safeJson(obj)); }
 
+  // =====================================================================
+  // 12. 独立用量页面（#ocgo=usage&ws=...）：读 IndexedDB 缓存并格式化展示
+  // =====================================================================
+  function viewParams() {
+    const raw = (location.hash || location.search || "").replace(/^[#?]/, "");
+    return new URLSearchParams(raw);
+  }
+  function isUsageView() { return viewParams().get("ocgo") === "usage"; }
+
+  function openUsageView() {
+    const ws = currentWorkspace();
+    if (!ws) { setStatus("❌ 请先选择工作区"); return; }
+    window.open(location.origin + "/go#ocgo=usage&ws=" + encodeURIComponent(ws), "_blank");
+    info("view", "打开用量页面", { ws });
+  }
+
+  async function buildUsageView() {
+    injectStyle();
+    let ws = viewParams().get("ws") || "";
+    const view = el("div", { id: "ocgo-usage-view" });
+    document.body.appendChild(view);
+
+    const head = el("div", { class: "ocgo-view-head" });
+    head.appendChild(el("span", { style: "font-weight:700;font-size:15px;margin-right:6px" }, "OpenCodeGo 用量"));
+    const wsSel = el("select", { id: "ocgo-view-ws" });
+    wsSel.appendChild(el("option", { value: "" }, "(选择工作区)"));
+    const rangeSel = el("select", { id: "ocgo-view-range" });
+    for (const [v, l] of [["today", "当天"], ["1d", "最近1天"], ["7d", "最近7天"], ["30d", "最近30天"], ["custom", "自定义"]]) {
+      rangeSel.appendChild(el("option", { value: v }, l));
+    }
+    rangeSel.value = "7d";
+    const customRow = el("div", { id: "ocgo-view-custom" });
+    const customFrom = el("input", { type: "datetime-local", id: "ocgo-view-from" });
+    const customTo = el("input", { type: "datetime-local", id: "ocgo-view-to" });
+    customRow.append(el("span", {}, "从"), customFrom, el("span", {}, "到"), customTo);
+    const btnRefresh = el("button", {}, "刷新数据");
+    const btnExport = el("button", {}, "导出报告");
+    const btnBack = el("button", {}, "← 返回仪表盘");
+    head.append(wsSel, el("span", {}, "时间范围"), rangeSel, btnRefresh, btnExport, btnBack);
+    const status = el("div", { id: "ocgo-view-status" });
+    const analysis = el("div", { id: "ocgo-view-analysis", class: "ocgo-view-body" }, "加载中...");
+    view.append(head, customRow, status, analysis);
+
+    let rangeMode = "7d";
+    const currentRange = () => {
+      const now = new Date();
+      const end = now.getTime();
+      if (rangeMode === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); return { from: d.getTime(), to: end, label: "当天" }; }
+      if (rangeMode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: "最近 1 天" };
+      if (rangeMode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: "最近 30 天" };
+      if (rangeMode === "custom") {
+        const from = customFrom.value ? new Date(customFrom.value).getTime() : end - 7 * 24 * 3600 * 1000;
+        const to = customTo.value ? new Date(customTo.value).getTime() : end;
+        return { from, to, label: "自定义" };
+      }
+      return { from: end - 7 * 24 * 3600 * 1000, to: end, label: "最近 7 天" };
+    };
+
+    const render = async () => {
+      ws = wsSel.value || ws;
+      if (!ws) { analysis.textContent = "没有可用缓存。请先在仪表盘点“拉取全量用量”。"; status.textContent = ""; return; }
+      const usage = await loadUsage(ws);
+      if (!usage.meta || !usage.records.length) {
+        analysis.textContent = "工作区 " + ws + " 暂无用量缓存。请先回仪表盘 → 拉取全量用量。";
+        status.textContent = "";
+        return;
+      }
+      const range = currentRange();
+      const a = analyzeUsage(usage.records, range.from, range.to);
+      analysis.innerHTML = renderAnalysis(a, range.label);
+      status.textContent = "缓存 " + usage.records.length + " 条 | 全量抓取于 " + fmtTime(usage.meta.lastFullFetchAt) +
+        (usage.meta.complete ? "" : "（缓存不完整）");
+    };
+
+    // 工作区下拉（来自缓存）
+    const keys = await IDB.keysWithPrefix("usage:");
+    const wss = keys.map((k) => String(k).slice("usage:".length)).filter(Boolean);
+    for (const w of wss) {
+      const o = el("option", { value: w }, w);
+      if (w === ws) o.selected = true;
+      wsSel.appendChild(o);
+    }
+    if (!ws && wss.length) ws = wss[0];
+
+    rangeSel.addEventListener("change", () => {
+      rangeMode = rangeSel.value;
+      customRow.classList.toggle("ocgo-show", rangeMode === "custom");
+      render();
+    });
+    customFrom.addEventListener("change", () => { if (rangeMode === "custom") render(); });
+    customTo.addEventListener("change", () => { if (rangeMode === "custom") render(); });
+    wsSel.addEventListener("change", render);
+    btnExport.addEventListener("click", async () => {
+      const usage = await loadUsage(wsSel.value || ws);
+      const range = currentRange();
+      const a = analyzeUsage(usage.records, range.from, range.to);
+      downloadJson("opencodego-view-report", { workspace: ws, range, total: a.total, cacheHitRate: a.cacheHitRate, byModel: a.byModel, byDay: a.byDay });
+    });
+    btnRefresh.addEventListener("click", async () => {
+      const target = wsSel.value || ws;
+      if (!target) return;
+      if (task.running) { status.textContent = "⚠ 已有任务进行中，稍后再试"; return; }
+      status.textContent = "⏳ 正在拉取最新全量用量...";
+      try {
+        const res = await fetchAllUsage(target, (p) => {
+          status.textContent = "⏳ 第 " + p.page + " 页，累计 " + p.fetched + " 条" + (p.hitHistory ? "｜命中历史" : "");
+        });
+        if (res.stopped) status.textContent = "⏹ 已停止";
+        else status.textContent = res.stoppedAtHistory ? "✅ 命中历史，提前停止（已与历史合并）" : "✅ 拉取完成";
+      } catch (e) {
+        status.textContent = "❌ 刷新失败：" + String(e && e.message || e);
+      }
+      await render();
+    });
+    btnBack.addEventListener("click", () => { location.href = location.origin; });
+
+    await render();
+    info("view", "用量页面已渲染", { ws, workspaces: wss.length });
+  }
+
   function copyLogs() {
     const text = logBuffer.map((e) => "[" + e.t + "][" + e.level + "][" + e.cat + "] " + e.msg + (e.data && e.data !== "null" ? " " + e.data : "")).join("\n");
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1004,10 +1120,9 @@
 
     const tabs = el("div", { id: "ocgo-tabs" });
     const tabData = el("button", { "data-tab": "data" }, "数据");
-    const tabAna = el("button", { "data-tab": "analysis" }, "分析");
     const tabLog = el("button", { "data-tab": "log" }, "日志");
     tabData.classList.add("ocgo-active");
-    tabs.append(tabData, tabAna, tabLog);
+    tabs.append(tabData, tabLog);
 
     const body = el("div", { id: "ocgo-body" });
 
@@ -1020,15 +1135,14 @@
     wsRow.append(ws, btnRefreshWs);
     const btns = el("div", { id: "ocgo-btns" });
     const btnFetchAllUsage = el("button", { class: "ocgo-primary" }, "拉取全量用量");
-    const btnKeys = el("button", {}, "Keys");
+    const btnOpenView = el("button", { class: "ocgo-primary" }, "打开用量页面");
     const btnClearCache = el("button", {}, "清空缓存");
     const btnStop = el("button", { class: "ocgo-stop", id: "ocgo-btn-stop" }, "⏹ 停止");
-    btns.append(btnFetchAllUsage, btnKeys, btnClearCache, btnStop);
+    btns.append(btnFetchAllUsage, btnOpenView, btnClearCache, btnStop);
     const status = el("div", { id: "ocgo-status" }, "就绪");
     const cacheState = el("div", { id: "ocgo-cache-state" });
-    const result = el("pre", { id: "ocgo-result" }, "就绪。点击“自检协议”验证通道，或“一键全部”拉取数据。");
-    dataTab.append(wsRow, btns, status, cacheState, result);    // ---- analysis tab ----
-    const anaTab = el("div", { class: "ocgo-tab", id: "ocgo-tab-analysis" });
+    const result = el("pre", { id: "ocgo-result" }, "就绪。点击“拉取全量用量”抓取数据，再点“打开用量页面”查看格式化用量。");
+    // 分析区直接并入数据页
     const rangeRow = el("div", { id: "ocgo-range" });
     const rangeSel = el("select", { id: "ocgo-range-mode" });
     for (const [v, l] of [["today", "当天"], ["1d", "最近1天"], ["7d", "最近7天"], ["30d", "最近30天"], ["custom", "自定义"]]) {
@@ -1046,7 +1160,7 @@
     const btnExportReport = el("button", {}, "导出分析报告");
     anaBtns.append(btnAnalyze, btnRefreshUsage, btnExportReport);
     const analysis = el("div", { id: "ocgo-analysis" }, "选择时间范围后点击“开始分析”（基于缓存，不自动发起全量拉取）。");
-    anaTab.append(rangeRow, customRow, anaBtns, analysis);
+    dataTab.append(wsRow, btns, status, cacheState, result, rangeRow, customRow, anaBtns, analysis);
 
     // ---- log tab ----
     const logTab = el("div", { class: "ocgo-tab", id: "ocgo-tab-log" });
@@ -1063,15 +1177,15 @@
     logWrap.append(logHead, logList);
     logTab.append(logBtns, logWrap);
 
-    body.append(dataTab, anaTab, logTab);
+    body.append(dataTab, logTab);
     panel.append(head, tabs, body);
     document.body.append(fab, panel);
 
     ui = { fab, panel, ws, status, cacheState, result, analysis, logList, logStats, btnStop,
-      cbEnabled, cbLog, cbVerbose, customFrom, customTo, rangeSel, dataTab, anaTab, logTab, tabData, tabAna, tabLog };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
+      cbEnabled, cbLog, cbVerbose, customFrom, customTo, rangeSel, dataTab, logTab, tabData, tabLog };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
     btnClose.addEventListener("click", () => panel.classList.add("ocgo-hidden"));
     logHead.addEventListener("click", () => logList.style.display = logList.style.display === "none" ? "" : "none");
-    for (const b of [tabData, tabAna, tabLog]) {
+    for (const b of [tabData, tabLog]) {
       b.addEventListener("click", () => switchTab(b.getAttribute("data-tab")));
     }
     cbEnabled.addEventListener("change", () => {
@@ -1093,11 +1207,7 @@
 
     btnRefreshWs.addEventListener("click", refreshWorkspaces);
     btnFetchAllUsage.addEventListener("click", () => runTask("全量用量", () => fetchAllUsageWithProgress(currentWorkspace())));
-    btnKeys.addEventListener("click", () => runTask("Keys", async () => {
-      const data = await rpcCall("key.list", [currentWorkspace()]);
-      setResult("## key.list\n" + safeJson(data));
-      setStatus("✅ Keys 拉取成功");
-    }));
+    btnOpenView.addEventListener("click", openUsageView);
     btnClearCache.addEventListener("click", async () => { await clearCache(); setStatus("✅ 缓存已清空"); await renderCacheState(); });
 
     btnAnalyze.addEventListener("click", () => runTask("分析", () => runAnalysis(false)));
@@ -1115,8 +1225,8 @@
 
   function switchTab(name) {
     if (!ui) return;
-    const map = { data: ui.dataTab, analysis: ui.anaTab, log: ui.logTab };
-    const btnMap = { data: ui.tabData, analysis: ui.tabAna, log: ui.tabLog };
+    const map = { data: ui.dataTab, log: ui.logTab };
+    const btnMap = { data: ui.tabData, log: ui.tabLog };
     for (const k in map) map[k].classList.toggle("ocgo-active", k === name);
     for (const k in btnMap) btnMap[k].classList.toggle("ocgo-active", k === name);
   }
@@ -1195,10 +1305,16 @@
       return;
     }
     if (location.hostname !== "opencode.ai") return;
+    if (isUsageView()) {
+      const startView = () => { buildUsageView().catch((e) => console.error("[OpenCodeGo] 用量页面渲染失败", e)); };
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startView);
+      else startView();
+      return;
+    }
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", "OpenCodeGo 助手已启动", { version: "0.5.0", url: location.href });
+      info("boot", "OpenCodeGo 助手已启动", { version: "0.6.0", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1225,7 +1341,7 @@
 
   // 调试/测试钩子：控制台可查状态；e2e 测试用 cacheUsage/loadUsage/assessUsageCache
   window.__ocgo = {
-    version: "0.5.0",
+    version: "0.6.0",
     debug: () => ({
       logBuffer: logBuffer.length,
       timer: !!logPersistTimer,
