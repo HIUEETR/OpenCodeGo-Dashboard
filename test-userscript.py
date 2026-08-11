@@ -155,7 +155,13 @@ def main():
         assert "请求时间" in htext and "模型" in htext and "成本" in htext, htext[:200]
         assert "deepseek-v4-flash" in htext
         assert "共 2 条" in hstatus, hstatus
-        print("history tab OK: formatted usage history table rendered")
+        # v0.8.1: column order 输入->推理->缓存读->输出->成本; no 会话; 24h time yyyy/MM/dd HH:mm:ss
+        idx = [htext.index(k) for k in ["输入", "推理", "缓存读", "输出", "成本"]]
+        assert idx == sorted(idx), (idx, htext[:200])
+        assert "会话" not in htext, htext[:200]
+        import re as _re
+        assert _re.search(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}", htext), htext[:200]
+        print("history tab OK: ordered cols, 24h time, no session col")
 
         # range switch -> all shows 2 rows too
         page.select_option("#ocgo-history-range", "all")

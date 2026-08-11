@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.8.0
+// @version      0.8.1
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关。
 // @author       codex
 // @match        https://opencode.ai/*
@@ -873,6 +873,12 @@
     return { state: "ok", text: "持久历史（全量抓取于 " + fmtTime(meta.lastFullFetchAt) + "，共 " + meta.count + " 条；无过期，手动清空才消失）", meta, usage };
   }
   function fmtTime(ms) { return ms ? new Date(ms).toLocaleString() : "?"; }
+  // 24 小时制：yyyy/MM/dd HH:mm:ss
+  function fmtTime24(iso) {
+    const d = new Date(iso);
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "/" + pad(d.getMonth() + 1) + "/" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
 
   async function renderCacheState() {
     if (!ui) return;
@@ -922,11 +928,11 @@
     const LIMIT = 300;
     const shown = rows.slice(0, LIMIT);
     ui.historyStatus.textContent = "共 " + rows.length + " 条（" + range.label + "，历史共 " + usage.records.length + " 条）";
-    let html = "<table class='ocgo-tbl'><tr><th>请求时间</th><th>模型</th><th>输入</th><th>输出</th><th>推理</th><th>缓存读</th><th>成本</th><th>会话</th></tr>";
+    let html = "<table class='ocgo-tbl'><tr><th>请求时间</th><th>模型</th><th>输入</th><th>推理</th><th>缓存读</th><th>输出</th><th>成本</th></tr>";
     for (const r of shown) {
-      html += "<tr><td>" + new Date(r.timeCreated).toLocaleString() + "</td><td>" + (r.model || "-") + "</td><td>" + fmtNum(r.inputTokens) +
-        "</td><td>" + fmtNum(r.outputTokens) + "</td><td>" + fmtNum(r.reasoningTokens) + "</td><td>" + fmtNum(r.cacheReadTokens) +
-        "</td><td>" + fmtUsd(r.cost) + "</td><td>" + (r.sessionID ? String(r.sessionID).slice(-8) : "-") + "</td></tr>";
+      html += "<tr><td>" + fmtTime24(r.timeCreated) + "</td><td>" + (r.model || "-") + "</td><td>" + fmtNum(r.inputTokens) +
+        "</td><td>" + fmtNum(r.reasoningTokens) + "</td><td>" + fmtNum(r.cacheReadTokens) + "</td><td>" + fmtNum(r.outputTokens) +
+        "</td><td>" + fmtUsd(r.cost) + "</td></tr>";
     }
     html += "</table>";
     if (rows.length > LIMIT) html += "<p style='color:#8b949e'>仅显示前 " + LIMIT + " 条，共 " + rows.length + " 条，可缩小时间范围</p>";
@@ -943,11 +949,11 @@
       .filter((r) => { const t = new Date(r.timeCreated).getTime(); return t >= range.from && t <= range.to; })
       .sort((a, b) => (a.timeCreated < b.timeCreated ? 1 : -1));
     const esc = (v) => '"' + String(v === null || v === undefined ? "" : v).replace(/"/g, '""') + '"';
-    const lines = [["请求时间", "模型", "输入", "输出", "推理", "缓存读", "成本($)", "会话"].join(",")];
+    const lines = [["请求时间", "模型", "输入", "推理", "缓存读", "输出", "成本($)"].join(",")];
     for (const r of rows) {
-      lines.push([new Date(r.timeCreated).toLocaleString(), r.model || "", num(r.inputTokens), num(r.outputTokens),
-        num(r.reasoningTokens), num(r.cacheReadTokens), (num(r.cost) / MICROCENTS_PER_DOLLAR).toFixed(4),
-        r.sessionID ? String(r.sessionID).slice(-8) : ""].map(esc).join(","));
+      lines.push([fmtTime24(r.timeCreated), r.model || "", num(r.inputTokens),
+        num(r.reasoningTokens), num(r.cacheReadTokens), num(r.outputTokens),
+        (num(r.cost) / MICROCENTS_PER_DOLLAR).toFixed(4)].map(esc).join(","));
     }
     downloadText("opencodego-history-" + Date.now() + ".csv", "\uFEFF" + lines.join("\r\n"));
     info("history", "历史已导出", { rows: rows.length, range: range.label });
@@ -1320,7 +1326,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", "OpenCodeGo 助手已启动", { version: "0.8.0", url: location.href });
+      info("boot", "OpenCodeGo 助手已启动", { version: "0.8.1", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1347,7 +1353,7 @@
 
   // 调试/测试钩子：控制台可查状态；e2e 测试用 cacheUsage/loadUsage/assessUsageCache
   window.__ocgo = {
-    version: "0.8.0",
+    version: "0.8.1",
     debug: () => ({
       logBuffer: logBuffer.length,
       timer: !!logPersistTimer,
