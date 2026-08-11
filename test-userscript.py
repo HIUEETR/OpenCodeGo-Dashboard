@@ -209,6 +209,24 @@ def main():
         assert page.locator("#ocgo-btns button", has_text="清空缓存").count() == 0
         print("wording OK: 清空历史, no 缓存 button")
 
+        # v0.8.3: resize persists across reload
+        box = page.locator("#ocgo-panel .ocgo-rh-se").bounding_box()
+        assert box, "se resize handle missing"
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(min(box["x"] + box["width"] / 2 + 80, 1270), min(box["y"] + box["height"] / 2 + 80, 710), steps=5)
+        page.mouse.up()
+        page.wait_for_timeout(200)
+        size = json.loads(page.evaluate("() => localStorage.getItem('ocgo:panel-size') || 'null'"))
+        assert size and size["w"] > 0 and size["h"] > 0, size
+        print("resize saved:", size)
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_timeout(1200)
+        w = page.evaluate("() => document.querySelector('#ocgo-panel').style.width")
+        h = page.evaluate("() => document.querySelector('#ocgo-panel').style.height")
+        assert w == str(size["w"]) + "px" and h == str(size["h"]) + "px", (w, h, size)
+        print("resize restored after reload OK")
+
         browser.close()
 
     print("console errors:", errors[:5] if errors else "none")

@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.8.1
+// @version      0.8.3
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关。
-// @author       codex
-// @match        https://opencode.ai/*
+// @author       hiu
+// @match        https://opencode.ai/workspace/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -219,8 +219,6 @@
   const LOGS_KEY = "ocgo:logs";
   const DEFAULT_CONFIG = {
     enabled: true,
-    logEnabled: true,
-    autoCapture: true,
     maxUsagePages: 500,
   };
   function loadConfig() {
@@ -229,9 +227,6 @@
       if (raw) return Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
     } catch (e) { /* ignore */ }
     return Object.assign({}, DEFAULT_CONFIG);
-  }
-  function saveConfig(cfg) {
-    try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (e) { /* ignore */ }
   }
   let config = loadConfig();
 
@@ -264,7 +259,6 @@
   }
 
   function log(level, cat, msg, data) {
-    if (!config.logEnabled && level !== "error") return;
     const entry = { t: ts(), level, cat, msg: String(msg), data: data === undefined ? null : truncate(data) };
     logBuffer.push(entry);
     if (logBuffer.length > MAX_LOGS) logBuffer = logBuffer.slice(-MAX_LOGS);
@@ -403,7 +397,7 @@
   }  // =====================================================================
   // 5. 服务端函数 ID（2026-08-10 快照）
   // =====================================================================
-  // 精简版（v0.5.0）：只保留实际用到的服务端函数
+  // 只保留实际用到的服务端函数
   const FN_IDS = {
     "workspaces": "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f",
     // usage.list：bfd684bf 是 usage 页面真正的分页函数（参数 [ws, page]）。
@@ -523,7 +517,7 @@
   async function fetchAllUsage(ws, onProgress) {
     const PAGE_SIZE = 50;
     const maxPages = config.maxUsagePages || 500;
-    // 历史数据：用于“遇到重合即停止”的滚动刷新优化（v0.4.3：只要有历史重合就停止，不要求历史完整）
+    // 历史数据：用于“遇到重合即停止”的滚动刷新优化
     const prev = await loadUsage(ws);
     const prevComplete = !!(prev.meta && prev.meta.complete && prev.meta.count > 0);
     const prevFps = new Set(prev.records.map((r) => usageFingerprint(r)));
@@ -568,7 +562,7 @@
       }
       if (onProgress) onProgress({ page: page + 1, fetched: merged.length, added, hitHistory });
       if (rows.length < PAGE_SIZE) { reachedEnd = true; page++; break; }
-      // v0.4.3：只要有历史重合即停止翻页，不再请求后续页（不再要求历史完整）
+      // 有历史重合即停止翻页，不再请求后续页
       if (hitHistory > 0) {
         stoppedAtHistory = true;
         break;
@@ -753,7 +747,6 @@
   }
 
   function setStatus(text) { if (ui) ui.status.textContent = text; }
-  function setResult(text) { if (ui) ui.result.textContent = text; }
   function setAnalysis(html) { if (ui) ui.analysis.innerHTML = html; }
 
   function currentWorkspace() {
@@ -773,7 +766,6 @@
 #ocgo-panel.ocgo-hidden{display:none;}
 #ocgo-head{padding:8px 10px;border-bottom:1px solid #333;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
 #ocgo-head .ocgo-title{font-weight:700;font-size:13px;margin-right:auto;}
-#ocgo-head label{display:inline-flex;align-items:center;gap:3px;cursor:pointer;}
 #ocgo-tabs{display:flex;border-bottom:1px solid #333;background:#161b22;}
 #ocgo-tabs button{flex:1;background:none;border:none;color:#8b949e;padding:8px 0;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;}
 #ocgo-tabs button.ocgo-active{color:#e6e6e6;border-bottom-color:#0d9488;}
@@ -788,8 +780,6 @@
 #ocgo-btns button.ocgo-primary,#ocgo-analyze-btns button.ocgo-primary{background:#0d9488;border-color:#0d9488;color:#fff;}
 #ocgo-btns button.ocgo-stop{background:#d29922;border-color:#d29922;color:#111;display:none;}
 #ocgo-status{color:#8b949e;min-height:16px;}
-#ocgo-result{background:#0d1117;border:1px solid #333;border-radius:6px;padding:6px;max-height:260px;overflow:auto;white-space:pre-wrap;
-  font:11px/1.45 Consolas,monospace;word-break:break-all;}
 #ocgo-history-state{color:#8b949e;font-size:11px;}
 #ocgo-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 #ocgo-range select,#ocgo-range input,#ocgo-custom-range input{background:#1c2128;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:4px 6px;}
@@ -811,7 +801,6 @@
 .ocgo-log{display:flex;gap:6px;padding:1px 0;border-bottom:1px dashed #222;word-break:break-all;}
 .ocgo-log .ocgo-lv{flex:0 0 42px;font-weight:700;}
 .ocgo-log .ocgo-cat{flex:0 0 64px;color:#8b949e;}
-.ocgo-log.ocgo-debug .ocgo-lv{color:#8b949e;}
 .ocgo-log.ocgo-info .ocgo-lv{color:#58a6ff;}
 .ocgo-log.ocgo-warn .ocgo-lv{color:#d29922;}
 .ocgo-log.ocgo-error .ocgo-lv{color:#f85149;}
@@ -1038,7 +1027,22 @@
     toEl.value = toLocalInput(end);
   }
 
-  // 面板边缘拖动调整大小（切换标签页不会重置尺寸）
+  // 面板边缘拖动调整大小（切换标签页不重置；大小记住到下次会话）
+  const PANEL_SIZE_KEY = "ocgo:panel-size";
+  function loadPanelSize() {
+    try {
+      const raw = localStorage.getItem(PANEL_SIZE_KEY);
+      if (raw) {
+        const v = JSON.parse(raw);
+        if (typeof v.w === "number" && v.w > 0 && typeof v.h === "number" && v.h > 0) return v;
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function savePanelSize(w, h) {
+    try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify({ w: Math.round(w), h: Math.round(h) })); } catch (e) { /* ignore */ }
+  }
+
   function initResize(panel) {
     const MIN_W = 380;
     const MIN_H = 320;
@@ -1065,6 +1069,7 @@
       const up = () => {
         document.removeEventListener("mousemove", move);
         document.removeEventListener("mouseup", up);
+        savePanelSize(parseInt(panel.style.width, 10) || panel.offsetWidth, parseInt(panel.style.height, 10) || panel.offsetHeight);
       };
       document.addEventListener("mousemove", move);
       document.addEventListener("mouseup", up);
@@ -1107,6 +1112,11 @@
     const fab = el("button", { id: "ocgo-fab", title: "OpenCodeGo 助手" }, "⚙");
     const panel = el("div", { id: "ocgo-panel" });
     panel.classList.add("ocgo-hidden");
+    const savedSize = loadPanelSize();
+    if (savedSize) {
+      panel.style.width = savedSize.w + "px";
+      panel.style.height = savedSize.h + "px";
+    }
 
     const head = el("div", { id: "ocgo-head" });
     head.appendChild(el("span", { class: "ocgo-title" }, "OpenCodeGo 助手"));
@@ -1136,7 +1146,6 @@
     btns.append(btnFetchAllUsage, btnClearCache, btnStop);
     const status = el("div", { id: "ocgo-status" }, "就绪");
     const cacheState = el("div", { id: "ocgo-history-state" });
-    const result = el("pre", { id: "ocgo-result" }, "就绪。点击“拉取全量用量”抓取数据，可切换到“使用历史”查看明细。");
     // 分析区直接并入数据页
     const rangeRow = el("div", { id: "ocgo-range" });
     const rangeSel = el("select", { id: "ocgo-range-mode" });
@@ -1155,7 +1164,7 @@
     const btnExportReport = el("button", {}, "导出分析报告");
     anaBtns.append(btnAnalyze, btnRefreshUsage, btnExportReport);
     const analysis = el("div", { id: "ocgo-analysis" }, "选择时间范围后点击“开始分析”（基于历史，不自动发起全量拉取）。");
-    dataTab.append(wsRow, btns, status, cacheState, result, rangeRow, customRow, anaBtns, analysis);
+    dataTab.append(wsRow, btns, status, cacheState, rangeRow, customRow, anaBtns, analysis);
 
     // ---- history tab：近期 API 使用情况和成本 ----
     const historyTab = el("div", { class: "ocgo-tab", id: "ocgo-tab-history" });
@@ -1197,7 +1206,7 @@
     document.body.append(fab, panel);
     initResize(panel);
 
-    ui = { fab, panel, ws, status, cacheState, result, analysis, logList, logStats, btnStop,
+    ui = { fab, panel, ws, status, cacheState, analysis, logList, logStats, btnStop,
       customFrom, customTo, rangeSel, dataTab, historyTab, historyRange, historyFrom, historyTo, historyStatus, historyTable, logTab, tabData, tabHistory, tabLog };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
     btnClose.addEventListener("click", () => panel.classList.add("ocgo-hidden"));
     logHead.addEventListener("click", () => logList.style.display = logList.style.display === "none" ? "" : "none");
@@ -1309,9 +1318,9 @@
 
   function updateLogStats() {
     if (!ui) return;
-    const counts = { debug: 0, info: 0, warn: 0, error: 0 };
+    const counts = { info: 0, warn: 0, error: 0 };
     for (const e of logBuffer) if (counts[e.level] !== undefined) counts[e.level]++;
-    ui.logStats.textContent = "共" + logBuffer.length + "条 (E:" + counts.error + " W:" + counts.warn + " I:" + counts.info + " D:" + counts.debug + ")";
+    ui.logStats.textContent = "共" + logBuffer.length + "条 (E:" + counts.error + " W:" + counts.warn + " I:" + counts.info + ")";
   }
 
   // =====================================================================
@@ -1319,14 +1328,14 @@
   // =====================================================================
   function init() {
     if (!config.enabled) {
-      console.log("[OpenCodeGo] 总开关已关闭，脚本未注入（可在油猴管理页重新启用后打开开关）");
+      console.log("[OpenCodeGo] 总开关已关闭，脚本未注入（可在油猴管理页重新启用）");
       return;
     }
     if (location.hostname !== "opencode.ai") return;
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", "OpenCodeGo 助手已启动", { version: "0.8.1", url: location.href });
+      info("boot", "OpenCodeGo 助手已启动", { version: "0.8.3", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1351,23 +1360,12 @@
     init();
   }
 
-  // 调试/测试钩子：控制台可查状态；e2e 测试用 cacheUsage/loadUsage/assessUsageCache
+  // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.8.1",
-    debug: () => ({
-      logBuffer: logBuffer.length,
-      timer: !!logPersistTimer,
-      rawLen: (() => { try { return (localStorage.getItem(LOGS_KEY) || "").length; } catch (e) { return -1; } })(),
-      config: config,
-    }),
-    fnIds: () => Object.assign({}, FN_IDS),
-    usageFingerprint,
+    version: "0.8.3",
     cacheUsage,
     loadUsage,
     assessUsageCache,
     clearCache,
-    encodeArgs,
-    decodeStream,
-    task: () => ({ running: task.running, label: task.label, stopRequested: task.stopRequested }),
   };
 })();
