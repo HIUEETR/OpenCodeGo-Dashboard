@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.0
+// @version      0.9.1
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -545,12 +545,15 @@
     const panelVisible = !ui.panel.classList.contains("ocgo-hidden");
     const activeEl = document.querySelector("#ocgo-tabs button.ocgo-active");
     const activeTab = activeEl ? activeEl.getAttribute("data-tab") : "data";
+    const prevWs = currentWorkspace(); // 切换语言前记住当前工作区
     ui.fab.remove();
     ui.panel.remove();
     ui = null;
     buildUI();
     if (panelVisible) ui.panel.classList.remove("ocgo-hidden");
+    populateWorkspaceSelect(ui.ws, prevWs); // 重建后从缓存恢复工作区列表与选中项
     switchTab(activeTab === "history" || activeTab === "log" ? activeTab : "data");
+    renderCacheState();
   }
 
   // =====================================================================
@@ -1061,6 +1064,7 @@
   // =====================================================================
   let ui = null;
   let workspaceList = [];
+  let workspacesLoaded = false;
 
   function el(tag, attrs, text) {
     const node = document.createElement(tag);
@@ -1159,20 +1163,29 @@
     style.id = "ocgo-style";
     style.textContent = css();
     (document.head || document.documentElement).appendChild(style);
-  }  async function refreshWorkspaces() {
+  }  // 用缓存的 workspaceList 填充工作区下拉框，并尽量恢复 selectedId 选中项
+  function populateWorkspaceSelect(select, selectedId) {
+    if (!select) return;
+    select.innerHTML = "";
+    if (!workspaceList.length) {
+      select.appendChild(el("option", { value: "" }, workspacesLoaded ? t("ws.none") : t("ws.notLoaded")));
+      return;
+    }
+    for (const w of workspaceList) {
+      const id = typeof w === "string" ? w : w.id;
+      const name = typeof w === "string" ? w : (w.name || w.id);
+      const opt = el("option", { value: id }, name + " (" + id + ")");
+      if (id === selectedId) opt.selected = true;
+      select.appendChild(opt);
+    }
+  }
+
+  async function refreshWorkspaces() {
     try {
       const data = await rpcCall("workspaces", []);
       workspaceList = Array.isArray(data) ? data : [];
-      ui.ws.innerHTML = "";
-      if (!workspaceList.length) ui.ws.appendChild(el("option", { value: "" }, t("ws.none")));
-      const cur = currentWorkspace();
-      for (const w of workspaceList) {
-        const id = typeof w === "string" ? w : w.id;
-        const name = typeof w === "string" ? w : (w.name || w.id);
-        const opt = el("option", { value: id }, name + " (" + id + ")");
-        if (id === cur) opt.selected = true;
-        ui.ws.appendChild(opt);
-      }
+      workspacesLoaded = true;
+      populateWorkspaceSelect(ui.ws, currentWorkspace());
       info("workspace", t("log.wsRefreshed", { n: workspaceList.length }));
       setStatus(t("ws.refreshed", { n: workspaceList.length }));
     } catch (e) {
@@ -1675,7 +1688,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.0", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.1", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1702,7 +1715,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.0",
+    version: "0.9.1",
     cacheUsage,
     loadUsage,
     assessUsageCache,

@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.0 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.1 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 USER_JS = Path(__file__).resolve().parent / "opencodego-dashboard.user.js"
 WS = "wrk_TEST"
 USAGE_ID = "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c"
+WORKSPACES_ID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
 
 REC = {
     "A": {"id": "usg_a", "timeCreated": "2026-08-10T09:00:00.000Z", "model": "deepseek-v4-flash",
@@ -42,6 +43,14 @@ def seroval_response(records):
     return (";0x%08x;" % len(b)).encode("utf-8") + b
 
 
+def seroval_array(values):
+    # plain array of pre-formatted JS literals (e.g. ['"wrk_TEST"'])
+    expr = ('((self.$R=self.$R||{})["server-fn:test"]=[],($R=>$R[0]=[%s])("server-fn:test"))'
+            % ",".join(values))
+    b = expr.encode("utf-8")
+    return (";0x%08x;" % len(b)).encode("utf-8") + b
+
+
 def goto_retry(page, url):
     for attempt in range(4):
         try:
@@ -69,6 +78,9 @@ def main():
 
         def handle_route(route):
             req = route.request
+            if req.headers.get("x-server-id") == WORKSPACES_ID:
+                route.fulfill(status=200, content_type="text/javascript", body=seroval_array(['"wrk_TEST"']))
+                return
             if req.headers.get("x-server-id") != USAGE_ID:
                 return route.continue_()
             usage_requests.append(req)
@@ -126,9 +138,24 @@ def main():
         assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
         print("language switch OK: en tabs + buttons, back to zh")
 
-        page.evaluate(
-            """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
-                       o.value = ws; o.text = "TEST (" + ws + ")"; s.appendChild(o); s.value = ws; }""", WS)
+        # Load the workspace list through the real RPC path (intercepted offline).
+        # NOTE: refresh button lives in #ocgo-ws-row (not #ocgo-btns, which is the data/log button row).
+        page.locator("#ocgo-ws-row button", has_text="刷新工作区").click()
+        page.wait_for_function(
+            "() => Array.from(document.querySelector('#ocgo-ws').options).some(o => o.value === 'wrk_TEST')",
+            timeout=10000)
+        page.select_option("#ocgo-ws", WS)
+        assert page.locator("#ocgo-ws").input_value() == WS
+
+        # v0.9.1 regression: workspace selection must survive language switch (no refresh needed)
+        page.select_option("#ocgo-lang", "en")
+        page.wait_for_timeout(300)
+        assert page.locator("#ocgo-ws").input_value() == WS, page.locator("#ocgo-ws").input_value()
+        page.select_option("#ocgo-lang", "zh")
+        page.wait_for_timeout(300)
+        assert page.locator("#ocgo-ws").input_value() == WS, page.locator("#ocgo-ws").input_value()
+        assert page.locator("#ocgo-ws option", has_text="wrk_TEST").count() == 1
+        print("workspace survives language switch OK (value=" + page.locator("#ocgo-ws").input_value() + ")")
 
         # Scenario A: complete history -> early stop after page 0
         page.evaluate(
