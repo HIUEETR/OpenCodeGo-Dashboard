@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.4.3
+// @version      0.5.0
 // @description  查询 OpenCode Go 套餐/用量/API调用记录；全量分页(可停止/防重复/互斥)+IndexedDB缓存(含完整度与TTL认定)；用量分析页；日志与开关。
 // @author       codex
 // @match        https://opencode.ai/*
@@ -414,25 +414,13 @@
   }  // =====================================================================
   // 5. 服务端函数 ID（2026-08-10 快照）
   // =====================================================================
+  // 精简版（v0.5.0）：只保留实际用到的服务端函数
   const FN_IDS = {
-    "changelog": "19b64dfae6b9d973a68cf204d4b233b8cbc1fd64a65b9835a63fb833ea871c8a",
-    "checkLoggedIn.get": "1c3d1da2c4236fb0a5eb8f5d4b08fbb2026b9515354f5edbeee5e64348cbc10a",
     "workspaces": "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f",
-    "session.get": "9bc4808361cdaee17059a8d3822b36ee8c9a0d93f1adc289fa1926998e3c9768",
-    "billing.get": "c83b78a614689c38ebee981f9b39a8b377716db85c1fd7dbab604adc02d3313d",
     // usage.list：bfd684bf 是 usage 页面真正的分页函数（参数 [ws, page]）。
     // 注意 6262ba54 是同名的 NewUserSection 查询（只传 [ws]，不能翻页），不要用。
     "usage.list": "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c",
-    "getCosts": "15702f3a12ff8bff357f8c2aa154a17e65b746d5f6b96adc9002c86ee0c15205",
-    "lite.subscription.get": "c7389bd0e731f80f49593e5ee53835475f4e28594dd6bd83eb229bab753498cd",
-    "go.referral.get": "2a0b2fef5fd2ec9eff0cb5d4955e4ada4eece21fac85591ed4c09630168d4844",
     "key.list": "c22cd964237ba79f2f9b95faa2a14b804f870d1bab49279463379cc6a0fd0c85",
-    "payment.list": "b5d793c83bf3d968eb8f74ec0416c35494e04234eef719af5302bf6daf669eb0",
-    "member.list": "238bd08a08e4b7e03c45eee5bd193feef389fd43f31c79b27d4e9299fa021ff6",
-    "subscription.get": "7abeebee372f304e050aaaf92be863f4a86490e382f8c79db68fd94040d691b4",
-    "workspace.get": "89fca0f6a776577af6363feed3239797e64e49ecf7c2dede983a15ac3f27d175",
-    "model.info": "786c969e9459e8d6f87aa7b8a7833d844de0856f9288968b33768b50c323944a",
-    "provider.list": "d86de0192772606f23719f2768fb0c923e4cd787265b2d62a8f67bafa20b2613",
   };
   function buildNameById() {
     const m = {};
@@ -644,7 +632,6 @@
   }  // =====================================================================
   // 9. 页面捕获：写入缓存但绝不提升 complete / lastFullFetchAt
   // =====================================================================
-  const captured = {};
   const pageWs = () => {
     const m = location.pathname.match(/\/workspace\/([^/?#]+)/);
     return m ? m[1] : (ui ? ui.ws.value : "") || undefined;
@@ -670,7 +657,6 @@
             warn("capture", "捕获响应解码失败", { name, message: String(e && e.message || e), body: text.slice(0, 300) });
             return;
           }
-          captured[fnId || url] = { name: name || url, time: Date.now(), data };
           const n = Array.isArray(data) ? data.length : (data && typeof data === "object" ? Object.keys(data).length : 0);
           info("capture", "页面RPC: " + (name || url) + (Array.isArray(data) ? "（" + n + " 条）" : ""));
           const ws = pageWs();
@@ -684,7 +670,7 @@
             }
             for (const [wid, rows] of byWs) cacheUsage(wid, rows, { full: false }).catch(() => {});
             if (ws) cacheUsage(ws, data, { full: false }).catch(() => {});
-          } else if (name && ws && ["lite.subscription.get", "billing.get", "key.list", "payment.list", "go.referral.get", "workspace.get", "session.get", "model.info", "provider.list"].includes(name)) {
+          } else if (name && ws && ["key.list"].includes(name)) {
             cacheSnapshot(name, ws, data).catch(() => {});
           }
         }).catch(() => {});
@@ -882,49 +868,6 @@
     }
   }
 
-  async function selfTest() {
-    const data = await rpcCall("changelog", []);
-    const first = Array.isArray(data) ? data[0] : data;
-    setResult("✅ 自检通过：RPC 协议可用（公开函数 changelog）\n最近版本: " + (first && (first.tag || first.name) || "?") + "\n时间: " + new Date().toISOString());
-    setStatus("✅ 自检通过");
-    return data;
-  }
-
-  async function fetchNamed(name, key, args) {
-    const ws = args !== undefined ? args : [currentWorkspace()];
-    if (name !== "changelog" && !ws[0]) throw new Error("未找到工作区，请先登录并刷新工作区列表");
-    const data = await rpcCall(name, ws);
-    setResult("## " + name + "\n" + safeJson(data));
-    setStatus("✅ " + name + " 拉取成功");
-    return data;
-  }
-
-  async function fetchAll() {
-    if (!currentWorkspace()) await refreshWorkspaces();
-    const ws = currentWorkspace();
-    if (!ws) throw new Error("未找到工作区（未登录？）");
-    if (!setTaskBusy("一键全部")) return null;
-    setStatus("⏳ 一键全部拉取中...");
-    try {
-      const out = { workspace: ws, time: new Date().toISOString() };
-      out.go = await rpcCall("lite.subscription.get", [ws], task.controller.signal);
-      out.usage_page0 = await rpcCall("usage.list", [ws, 0], task.controller.signal);
-      out.billing = await rpcCall("billing.get", [ws], task.controller.signal);
-      out.keys = await rpcCall("key.list", [ws], task.controller.signal);
-      out.payments = await rpcCall("payment.list", [ws], task.controller.signal);
-      await cacheSnapshot("lite.subscription.get", ws, out.go);
-      await cacheSnapshot("billing.get", ws, out.billing);
-      await cacheSnapshot("key.list", ws, out.keys);
-      await cacheSnapshot("payment.list", ws, out.payments);
-      if (Array.isArray(out.usage_page0)) await cacheUsage(ws, out.usage_page0, { full: false });
-      setResult("## 一键全部\n" + safeJson(out));
-      setStatus("✅ 一键全部完成");
-      return out;
-    } finally {
-      finishTask();
-    }
-  }
-
   // 缓存认定：持久缓存，永不过期，只有手动清空才消失。
   // state: "none"（无缓存） | "partial"（来自页面捕获，未做过全量拉取） | "ok"（有持久缓存）
   async function assessUsageCache(ws) {
@@ -947,7 +890,7 @@
     if (ws) {
       const a = await assessUsageCache(ws);
       if (a.state !== "none") parts.push("用量[" + (a.state === "ok" ? "持久" : "不完整") + "] " + a.meta.count + "条 @" + fmtTime(a.meta.lastUpdatedAt));
-      for (const name of ["lite.subscription.get", "billing.get", "key.list", "payment.list"]) {
+      for (const name of ["key.list"]) {
         const s = await loadSnapshot(name, ws);
         if (s) parts.push(name + " @" + fmtTime(s.t));
       }
@@ -1076,18 +1019,11 @@
     const btnRefreshWs = el("button", {}, "刷新工作区");
     wsRow.append(ws, btnRefreshWs);
     const btns = el("div", { id: "ocgo-btns" });
-    const btnSelfTest = el("button", { class: "ocgo-primary" }, "自检协议");
-    const btnAll = el("button", { class: "ocgo-primary" }, "一键全部");
     const btnFetchAllUsage = el("button", { class: "ocgo-primary" }, "拉取全量用量");
-    const btnGo = el("button", {}, "Go套餐");
-    const btnUsage = el("button", {}, "用量(第1页)");
-    const btnBilling = el("button", {}, "账单");
     const btnKeys = el("button", {}, "Keys");
-    const btnPayments = el("button", {}, "支付记录");
-    const btnCaptured = el("button", {}, "查看捕获");
     const btnClearCache = el("button", {}, "清空缓存");
     const btnStop = el("button", { class: "ocgo-stop", id: "ocgo-btn-stop" }, "⏹ 停止");
-    btns.append(btnSelfTest, btnAll, btnFetchAllUsage, btnGo, btnUsage, btnBilling, btnKeys, btnPayments, btnCaptured, btnClearCache, btnStop);
+    btns.append(btnFetchAllUsage, btnKeys, btnClearCache, btnStop);
     const status = el("div", { id: "ocgo-status" }, "就绪");
     const cacheState = el("div", { id: "ocgo-cache-state" });
     const result = el("pre", { id: "ocgo-result" }, "就绪。点击“自检协议”验证通道，或“一键全部”拉取数据。");
@@ -1156,15 +1092,12 @@
     btnStop.addEventListener("click", requestStop);
 
     btnRefreshWs.addEventListener("click", refreshWorkspaces);
-    btnSelfTest.addEventListener("click", () => runTask("自检", selfTest));
-    btnAll.addEventListener("click", () => runTask("一键全部", fetchAll));
     btnFetchAllUsage.addEventListener("click", () => runTask("全量用量", () => fetchAllUsageWithProgress(currentWorkspace())));
-    btnGo.addEventListener("click", () => runTask("Go套餐", () => fetchNamed("lite.subscription.get", "go")));
-    btnUsage.addEventListener("click", () => runTask("用量", () => fetchNamed("usage.list", "usage", [currentWorkspace(), 0])));
-    btnBilling.addEventListener("click", () => runTask("账单", () => fetchNamed("billing.get", "billing")));
-    btnKeys.addEventListener("click", () => runTask("Keys", () => fetchNamed("key.list", "keys")));
-    btnPayments.addEventListener("click", () => runTask("支付", () => fetchNamed("payment.list", "payments")));
-    btnCaptured.addEventListener("click", showCaptured);
+    btnKeys.addEventListener("click", () => runTask("Keys", async () => {
+      const data = await rpcCall("key.list", [currentWorkspace()]);
+      setResult("## key.list\n" + safeJson(data));
+      setStatus("✅ Keys 拉取成功");
+    }));
     btnClearCache.addEventListener("click", async () => { await clearCache(); setStatus("✅ 缓存已清空"); await renderCacheState(); });
 
     btnAnalyze.addEventListener("click", () => runTask("分析", () => runAnalysis(false)));
@@ -1229,23 +1162,7 @@
     };
     downloadJson("opencodego-report", report);
     info("report", "分析报告已导出", { range: range.label });
-  }  function showCaptured() {
-    const keys = Object.keys(captured);
-    if (!keys.length) {
-      setResult("暂无捕获到的页面 RPC。打开 /workspace/<id>/usage 或 /go 页面后，页面自身请求会自动被记录并写入缓存。");
-      setStatus("⚠ 无捕获数据");
-      return;
-    }
-    const out = {};
-    for (const k of keys) {
-      const c = captured[k];
-      out[c.name || k] = { time: new Date(c.time).toISOString(), data: Array.isArray(c.data) ? { n: c.data.length, sample: c.data[0] } : c.data };
-    }
-    setResult("## 捕获的页面RPC（" + keys.length + " 条）\n" + safeJson(out));
-    setStatus("✅ 已显示捕获数据");
-  }
-
-  function renderLogEntry(entry, skipLimit) {
+  }  function renderLogEntry(entry, skipLimit) {
     if (!ui) return;
     const list = ui.logList;
     if (!skipLimit && list.childElementCount > MAX_LOGS) list.innerHTML = "";
@@ -1281,7 +1198,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", "OpenCodeGo 助手已启动", { version: "0.4.3", url: location.href });
+      info("boot", "OpenCodeGo 助手已启动", { version: "0.5.0", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1308,7 +1225,7 @@
 
   // 调试/测试钩子：控制台可查状态；e2e 测试用 cacheUsage/loadUsage/assessUsageCache
   window.__ocgo = {
-    version: "0.4.3",
+    version: "0.5.0",
     debug: () => ({
       logBuffer: logBuffer.length,
       timer: !!logPersistTimer,

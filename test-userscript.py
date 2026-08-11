@@ -91,13 +91,6 @@ def main():
             fab.click()
             page.wait_for_timeout(300)
 
-        try:
-            page.locator("#ocgo-btns button.ocgo-primary", has_text="自检协议").click()
-            page.wait_for_function("() => (document.querySelector('#ocgo-result').textContent || '').includes('自检通过')", timeout=30000)
-            print("self-test OK")
-        except Exception as e:
-            print("self-test skipped:", str(e)[:100])
-
         page.evaluate(
             """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
                        o.value = ws; o.text = "TEST (" + ws + ")"; s.appendChild(o); s.value = ws; }""", WS)
