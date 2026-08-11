@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.1 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.2 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -230,6 +230,11 @@ def main():
         from_v = page.locator("#ocgo-range-from").input_value()
         assert from_v, "custom from should be synced"
         print("data custom from synced:", from_v)
+        # v0.9.2: analysis range includes "all" -> shows all history
+        assert page.locator("#ocgo-range-mode option[value=all]").count() == 1
+        page.select_option("#ocgo-range-mode", "all")
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全部')", timeout=15000)
+        print("analysis all-range OK")
         # history custom inputs follow range (7d -> now-7d)
         page.locator("#ocgo-tabs button", has_text="使用历史").click()
         page.wait_for_timeout(200)

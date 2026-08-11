@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.1
+// @version      0.9.2
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -1304,6 +1304,7 @@
     }
     if (rangeMode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: t("range.1d") };
     if (rangeMode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: t("range.30d") };
+    if (rangeMode === "all") return { from: 0, to: end, label: t("range.all") };
     if (rangeMode === "custom") {
       const from = ui.customFrom.value ? new Date(ui.customFrom.value).getTime() : end - 7 * 24 * 3600 * 1000;
       const to = ui.customTo.value ? new Date(ui.customTo.value).getTime() : end;
@@ -1501,7 +1502,7 @@
     // 分析区直接并入数据页
     const rangeRow = el("div", { id: "ocgo-range" });
     const rangeSel = el("select", { id: "ocgo-range-mode" });
-    for (const [v, l] of [["today", t("range.today")], ["1d", t("range.1d")], ["7d", t("range.7d")], ["30d", t("range.30d")], ["custom", t("range.custom")]]) {
+    for (const [v, l] of [["today", t("range.today")], ["1d", t("range.1d")], ["7d", t("range.7d")], ["30d", t("range.30d")], ["all", t("range.all")], ["custom", t("range.custom")]]) {
       rangeSel.appendChild(el("option", { value: v }, l));
     }
     rangeSel.value = "today";
@@ -1688,7 +1689,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.1", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.2", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1715,7 +1716,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.1",
+    version: "0.9.2",
     cacheUsage,
     loadUsage,
     assessUsageCache,
