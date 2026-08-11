@@ -95,14 +95,17 @@ def main():
             fab.click()
             page.wait_for_timeout(300)
 
-        # v0.6.0: tabs merged to 数据/日志 only; no Keys button; has 打开用量页面
+        # v0.7.0: tabs = 数据/使用历史/日志; no Keys; no 打开用量页面; no 调试 toggle
         tab_names = page.locator("#ocgo-tabs button").all_text_contents()
         print("tabs:", tab_names)
-        assert tab_names == ["数据", "日志"], tab_names
+        assert tab_names == ["数据", "使用历史", "日志"], tab_names
         assert page.locator("#ocgo-btns button", has_text="Keys").count() == 0
-        assert page.locator("#ocgo-btns button", has_text="打开用量页面").count() == 1
+        assert page.locator("#ocgo-btns button", has_text="打开用量页面").count() == 0
         assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
-        print("UI merge OK: tabs=数据/日志, no Keys, open-view button present")
+        head_labels = page.locator("#ocgo-head label").all_text_contents()
+        print("head labels:", head_labels)
+        assert not any("调试" in x for x in head_labels), head_labels
+        print("UI OK: tabs=数据/使用历史/日志, no Keys/open-view, no debug toggle")
 
         page.evaluate(
             """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
@@ -137,24 +140,28 @@ def main():
         assert not page.locator("#ocgo-btn-stop").is_visible()
         print("B OK: 1 request, 50 merged, complete=False, stop hidden")
 
-        # Usage view page: seed full cache then open #ocgo=usage&ws=
+        # History tab: seed cache (50 rows from scenario A) then render usage history table
         page.evaluate(
             """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
             {"ws": WS, "a": REC["A"], "b": REC["B"]},
         )
-        view = ctx.new_page()
-        view.on("pageerror", lambda e: errors.append("view pageerror: " + str(e)))
-        goto_retry(view, "https://opencode.ai/go#ocgo=usage&ws=" + WS)
-        view.wait_for_timeout(3000)
-        assert view.locator("#ocgo-usage-view").is_visible(), "usage view not rendered"
-        view.wait_for_function("() => (document.querySelector('#ocgo-view-analysis').textContent || '').includes('缓存命中率')", timeout=15000)
-        vtext = view.locator("#ocgo-view-analysis").text_content()
-        assert "按模型" in vtext and "deepseek-v4-flash" in vtext, vtext[:200]
-        vstatus = view.locator("#ocgo-view-status").text_content()
-        print("view status:", vstatus)
-        assert "缓存 2 条" in vstatus, vstatus
-        print("usage view OK: formatted metrics rendered from cache")
-        view.close()
+        page.locator("#ocgo-tabs button", has_text="使用历史").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-history').textContent || '').includes('deepseek-v4-flash')", timeout=15000)
+        htext = page.locator("#ocgo-history").text_content()
+        hstatus = page.locator("#ocgo-history-status").text_content()
+        print("history status:", hstatus)
+        print("history table head:", htext[:120].replace("\n", " "))
+        assert "请求时间" in htext and "模型" in htext and "成本" in htext, htext[:200]
+        assert "deepseek-v4-flash" in htext
+        assert "共 2 条" in hstatus, hstatus
+        print("history tab OK: formatted usage history table rendered")
+
+        # range switch -> all shows 2 rows too
+        page.select_option("#ocgo-history-range", "all")
+        page.wait_for_timeout(300)
+        hstatus2 = page.locator("#ocgo-history-status").text_content()
+        assert "共 2 条" in hstatus2, hstatus2
+        print("history range OK")
 
         browser.close()
 
