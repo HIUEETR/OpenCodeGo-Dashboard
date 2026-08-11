@@ -104,8 +104,9 @@ def main():
         assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
         head_labels = page.locator("#ocgo-head label").all_text_contents()
         print("head labels:", head_labels)
-        assert not any("调试" in x for x in head_labels), head_labels
-        print("UI OK: tabs=数据/使用历史/日志, no Keys/open-view, no debug toggle")
+        assert head_labels == [], head_labels  # 总开关/日志/调试 勾选框全部移除
+        assert page.locator("#ocgo-head input[type=checkbox]").count() == 0
+        print("UI OK: tabs=数据/使用历史/日志, no Keys/open-view, no toggles")
 
         page.evaluate(
             """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
@@ -162,6 +163,45 @@ def main():
         hstatus2 = page.locator("#ocgo-history-status").text_content()
         assert "共 2 条" in hstatus2, hstatus2
         print("history range OK")
+
+        # ---- v0.8.0 checks ----
+        # default analysis range = today
+        page.locator("#ocgo-tabs button", has_text="数据").click()
+        page.wait_for_timeout(200)
+        assert page.locator("#ocgo-range-mode").input_value() == "today", "analysis range should default to today"
+        # switch range -> auto analyze (cache exists with A/B)
+        page.select_option("#ocgo-range-mode", "7d")
+        page.wait_for_function("() => (document.querySelector('#ocgo-analysis').textContent || '').includes('缓存命中率')", timeout=15000)
+        print("auto-analyze on range switch OK")
+        # data-page custom inputs synced after choosing 7d then custom
+        page.select_option("#ocgo-range-mode", "custom")
+        page.wait_for_timeout(200)
+        from_v = page.locator("#ocgo-range-from").input_value()
+        assert from_v, "custom from should be synced"
+        print("data custom from synced:", from_v)
+        # history custom inputs follow range (7d -> now-7d)
+        page.locator("#ocgo-tabs button", has_text="使用历史").click()
+        page.wait_for_timeout(200)
+        page.select_option("#ocgo-history-range", "all")
+        page.wait_for_timeout(150)
+        page.select_option("#ocgo-history-range", "7d")
+        page.wait_for_timeout(200)
+        hfrom = page.locator("#ocgo-history-from").input_value()
+        hto = page.locator("#ocgo-history-to").input_value()
+        print("history from/to:", hfrom, hto)
+        assert hfrom and hto, "history custom inputs should follow range"
+        from datetime import datetime, timedelta
+        fdt = datetime.strptime(hfrom, "%Y-%m-%dT%H:%M")
+        expected = datetime.now() - timedelta(days=7)
+        assert abs((fdt - expected).total_seconds()) < 180, (fdt, expected)
+        print("history 7d sync OK (from ~ now-7d)")
+        # resize handles present
+        assert page.locator("#ocgo-panel .ocgo-rh").count() == 8, "expected 8 resize handles"
+        print("resize handles OK")
+        # clear button renamed to 清空历史
+        assert page.locator("#ocgo-btns button", has_text="清空历史").count() == 1
+        assert page.locator("#ocgo-btns button", has_text="清空缓存").count() == 0
+        print("wording OK: 清空历史, no 缓存 button")
 
         browser.close()
 

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.7.0
-// @description  查询 OpenCode Go 套餐/用量/API调用记录；全量分页(可停止/防重复/互斥)+IndexedDB缓存(含完整度与TTL认定)；用量分析页；日志与开关。
+// @version      0.8.0
+// @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关。
 // @author       codex
 // @match        https://opencode.ai/*
 // @run-at       document-start
@@ -289,7 +289,7 @@
   }
 
   // =====================================================================
-  // 4. IndexedDB 缓存层
+  // 4. IndexedDB 历史存储层
   //    meta = { lastFullFetchAt, lastUpdatedAt, count, complete }
   //    - lastFullFetchAt: 仅"全量分页拉取成功完成/手动停止"时更新
   //    - lastUpdatedAt  : 任何写入（含页面捕获 page0）都更新
@@ -399,7 +399,7 @@
   async function clearCache() {
     const keys = await IDB.keysWithPrefix("");
     for (const k of keys) await IDB.del(k);
-    info("cache", "缓存已清空", keys.length + " 项");
+    info("cache", "历史已清空", keys.length + " 项");
   }  // =====================================================================
   // 5. 服务端函数 ID（2026-08-10 快照）
   // =====================================================================
@@ -523,7 +523,7 @@
   async function fetchAllUsage(ws, onProgress) {
     const PAGE_SIZE = 50;
     const maxPages = config.maxUsagePages || 500;
-    // 历史缓存：用于“遇到重合即停止”的滚动刷新优化（v0.4.3：只要有历史重合就停止，不要求历史完整）
+    // 历史数据：用于“遇到重合即停止”的滚动刷新优化（v0.4.3：只要有历史重合就停止，不要求历史完整）
     const prev = await loadUsage(ws);
     const prevComplete = !!(prev.meta && prev.meta.complete && prev.meta.count > 0);
     const prevFps = new Set(prev.records.map((r) => usageFingerprint(r)));
@@ -600,12 +600,12 @@
         setStatus(msg);
       });
       if (result.stopped) {
-        setStatus("⏹ 已停止：已拉取 " + result.records.length + " 条并保留到缓存（缓存标记为不完整）");
+        setStatus("⏹ 已停止：已拉取 " + result.records.length + " 条并保留到历史（标记为不完整）");
       } else if (result.stoppedAtHistory) {
-        const completeNote = result.complete ? "（完整）" : "（历史不完整，可能缺更早记录；建议清空缓存后完整拉取一次）";
-        setStatus("✅ 命中历史，提前停止翻页：本次拉到 " + result.records.length + " 条（含历史重合）已与历史缓存合并，写入缓存" + completeNote);
+        const completeNote = result.complete ? "（完整）" : "（历史不完整，可能缺更早记录；建议清空历史后完整拉取一次）";
+        setStatus("✅ 命中历史，提前停止翻页：本次拉到 " + result.records.length + " 条（含历史重合）已与历史合并，写入历史" + completeNote);
       } else {
-        setStatus("✅ 全量用量拉取完成：共 " + result.records.length + " 条，已写入缓存（完整）");
+        setStatus("✅ 全量用量拉取完成：共 " + result.records.length + " 条，已写入历史（完整）");
       }
       return result.records;
     } catch (e) {
@@ -617,7 +617,7 @@
       await renderCacheState();
     }
   }  // =====================================================================
-  // 9. 页面捕获：写入缓存但绝不提升 complete / lastFullFetchAt
+  // 9. 页面捕获：写入历史但绝不提升 complete / lastFullFetchAt
   // =====================================================================
   const pageWs = () => {
     const m = location.pathname.match(/\/workspace\/([^/?#]+)/);
@@ -662,7 +662,7 @@
       }).catch(() => {});
       return p;
     };
-    info("capture", "fetch hook 已安装（自动捕获 /_server RPC 并入缓存）");
+    info("capture", "fetch hook 已安装（自动捕获 /_server RPC 并入历史）");
   }
 
   // =====================================================================
@@ -752,12 +752,6 @@
     return node;
   }
 
-  function makeToggle(label, checkbox) {
-    const l = el("label", {}, label);
-    l.prepend(checkbox);
-    return l;
-  }
-
   function setStatus(text) { if (ui) ui.status.textContent = text; }
   function setResult(text) { if (ui) ui.result.textContent = text; }
   function setAnalysis(html) { if (ui) ui.analysis.innerHTML = html; }
@@ -796,7 +790,7 @@
 #ocgo-status{color:#8b949e;min-height:16px;}
 #ocgo-result{background:#0d1117;border:1px solid #333;border-radius:6px;padding:6px;max-height:260px;overflow:auto;white-space:pre-wrap;
   font:11px/1.45 Consolas,monospace;word-break:break-all;}
-#ocgo-cache-state{color:#8b949e;font-size:11px;}
+#ocgo-history-state{color:#8b949e;font-size:11px;}
 #ocgo-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 #ocgo-range select,#ocgo-range input,#ocgo-custom-range input{background:#1c2128;color:#e6e6e6;border:1px solid #333;border-radius:6px;padding:4px 6px;}
 #ocgo-custom-range{display:none;gap:6px;align-items:center;flex-wrap:wrap;}
@@ -822,6 +816,18 @@
 .ocgo-log.ocgo-warn .ocgo-lv{color:#d29922;}
 .ocgo-log.ocgo-error .ocgo-lv{color:#f85149;}
 #ocgo-stats{color:#8b949e;font-size:11px;}
+#ocgo-view-custom{display:none;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
+#ocgo-view-custom.ocgo-show{display:flex;}
+#ocgo-panel{min-width:380px;min-height:320px;}
+#ocgo-panel .ocgo-rh{position:absolute;z-index:6;}
+#ocgo-panel .ocgo-rh-n{top:-3px;left:10px;right:10px;height:6px;cursor:ns-resize;}
+#ocgo-panel .ocgo-rh-s{bottom:-3px;left:10px;right:10px;height:6px;cursor:ns-resize;}
+#ocgo-panel .ocgo-rh-e{right:-3px;top:10px;bottom:10px;width:6px;cursor:ew-resize;}
+#ocgo-panel .ocgo-rh-w{left:-3px;top:10px;bottom:10px;width:6px;cursor:ew-resize;}
+#ocgo-panel .ocgo-rh-ne{top:-3px;right:-3px;width:12px;height:12px;cursor:nesw-resize;}
+#ocgo-panel .ocgo-rh-nw{top:-3px;left:-3px;width:12px;height:12px;cursor:nwse-resize;}
+#ocgo-panel .ocgo-rh-se{bottom:-3px;right:-3px;width:12px;height:12px;cursor:nwse-resize;}
+#ocgo-panel .ocgo-rh-sw{bottom:-3px;left:-3px;width:12px;height:12px;cursor:nesw-resize;}
 `;
   }
 
@@ -853,18 +859,18 @@
     }
   }
 
-  // 缓存认定：持久缓存，永不过期，只有手动清空才消失。
-  // state: "none"（无缓存） | "partial"（来自页面捕获，未做过全量拉取） | "ok"（有持久缓存）
+  // 历史认定：持久保存，永不过期，只有手动清空才消失。
+  // state: "none"（无历史） | "partial"（来自页面捕获，未做过全量拉取） | "ok"（有持久历史）
   async function assessUsageCache(ws) {
     const usage = await loadUsage(ws);
     if (!usage.meta || !usage.records.length) {
-      return { state: "none", text: "没有用量缓存", meta: usage.meta, usage };
+      return { state: "none", text: "没有用量历史", meta: usage.meta, usage };
     }
     const meta = usage.meta;
     if (!meta.complete || !meta.lastFullFetchAt) {
-      return { state: "partial", text: "缓存不完整（仅 " + meta.count + " 条，来自页面捕获，未做过全量拉取；建议点“拉取最新并分析”）", meta, usage };
+      return { state: "partial", text: "历史不完整（仅 " + meta.count + " 条，来自页面捕获，未做过全量拉取；建议点“拉取最新并分析”）", meta, usage };
     }
-    return { state: "ok", text: "持久缓存（全量抓取于 " + fmtTime(meta.lastFullFetchAt) + "，共 " + meta.count + " 条；无过期，手动清空才消失）", meta, usage };
+    return { state: "ok", text: "持久历史（全量抓取于 " + fmtTime(meta.lastFullFetchAt) + "，共 " + meta.count + " 条；无过期，手动清空才消失）", meta, usage };
   }
   function fmtTime(ms) { return ms ? new Date(ms).toLocaleString() : "?"; }
 
@@ -876,7 +882,7 @@
       const a = await assessUsageCache(ws);
       if (a.state !== "none") parts.push("用量[" + (a.state === "ok" ? "持久" : "不完整") + "] " + a.meta.count + "条 @" + fmtTime(a.meta.lastUpdatedAt));
     }
-    ui.cacheState.textContent = parts.length ? "缓存：" + parts.join("；") : "缓存：无（拉取后自动缓存）";
+    ui.cacheState.textContent = parts.length ? "历史：" + parts.join("；") : "历史：无（拉取后自动记录）";
   }
 
   // =====================================================================
@@ -905,7 +911,7 @@
     if (!ws) { ui.historyTable.innerHTML = "<p>请先选择工作区。</p>"; ui.historyStatus.textContent = ""; return; }
     const usage = await loadUsage(ws);
     if (!usage.meta || !usage.records.length) {
-      ui.historyTable.innerHTML = "<p>暂无用量缓存，请先到“数据”页点击“拉取全量用量”。</p>";
+      ui.historyTable.innerHTML = "<p>暂无用量历史，请先到“数据”页点击“拉取全量用量”。</p>";
       ui.historyStatus.textContent = "";
       return;
     }
@@ -915,7 +921,7 @@
       .sort((a, b) => (a.timeCreated < b.timeCreated ? 1 : -1));
     const LIMIT = 300;
     const shown = rows.slice(0, LIMIT);
-    ui.historyStatus.textContent = "共 " + rows.length + " 条（" + range.label + "，缓存共 " + usage.records.length + " 条）";
+    ui.historyStatus.textContent = "共 " + rows.length + " 条（" + range.label + "，历史共 " + usage.records.length + " 条）";
     let html = "<table class='ocgo-tbl'><tr><th>请求时间</th><th>模型</th><th>输入</th><th>输出</th><th>推理</th><th>缓存读</th><th>成本</th><th>会话</th></tr>";
     for (const r of shown) {
       html += "<tr><td>" + new Date(r.timeCreated).toLocaleString() + "</td><td>" + (r.model || "-") + "</td><td>" + fmtNum(r.inputTokens) +
@@ -965,7 +971,7 @@
     return { from: end - 7 * 24 * 3600 * 1000, to: end, label: "最近 7 天" };
   }
 
-  // 分析：不自动触发全量拉取（避免误触发大量请求），先明确告诉用户缓存状态
+  // 分析：不自动触发全量拉取（避免误触发大量请求），先明确告诉用户历史状态
   async function runAnalysis(forceRefresh) {
     const ws = currentWorkspace();
     if (!ws) { setStatus("❌ 请先选择工作区"); return; }
@@ -988,8 +994,8 @@
       const assess = await assessUsageCache(ws);
       usage = assess.usage;
       if (assess.state === "none") {
-        setStatus("⚠ 没有缓存数据。请先在“数据”页点“拉取全量用量”，或点“拉取最新并分析”。");
-        setAnalysis("还没有用量缓存。<br>1) 数据页 → <b>拉取全量用量</b>（一次完整抓取）；<br>2) 或直接点这里右上角 <b>拉取最新并分析</b>。");
+        setStatus("⚠ 没有历史数据。请先到“数据”页点“拉取全量用量”，或点“拉取最新并分析”。");
+        setAnalysis("还没有用量历史。<br>1) 数据页 → <b>拉取全量用量</b>（一次完整抓取）；<br>2) 或直接点这里右上角 <b>拉取最新并分析</b>。");
         return;
       }
       cacheNote = assess.text;
@@ -1003,7 +1009,66 @@
     }
     setAnalysis(html);
     info("analysis", "分析完成 " + range.label, { range, total: analysis.total, cache: cacheStateFlag });
-    setStatus("✅ 分析完成：" + range.label + "，区间内 " + analysis.total.requests + " 条（缓存共 " + usage.records.length + " 条）｜" + (cacheNote || "缓存新鲜"));
+    setStatus("✅ 分析完成：" + range.label + "，区间内 " + analysis.total.requests + " 条（历史共 " + usage.records.length + " 条）｜" + (cacheNote || "已刷新"));
+  }
+
+  // 自定义时间输入随预设范围联动（当天/1d/7d/30d/all）
+  function toLocalInput(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+  function syncRangeInputs(mode, fromEl, toEl) {
+    const now = new Date();
+    const end = now.getTime();
+    let from;
+    if (mode === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); from = d.getTime(); }
+    else if (mode === "1d") from = end - 24 * 3600 * 1000;
+    else if (mode === "7d") from = end - 7 * 24 * 3600 * 1000;
+    else if (mode === "30d") from = end - 30 * 24 * 3600 * 1000;
+    else if (mode === "all") { fromEl.value = ""; toEl.value = toLocalInput(end); return; }
+    else return; // custom：保留用户输入
+    fromEl.value = toLocalInput(from);
+    toEl.value = toLocalInput(end);
+  }
+
+  // 面板边缘拖动调整大小（切换标签页不会重置尺寸）
+  function initResize(panel) {
+    const MIN_W = 380;
+    const MIN_H = 320;
+    const dirs = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+    const onDown = (dir) => (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const rect = panel.getBoundingClientRect();
+      const startW = rect.width;
+      const startH = rect.height;
+      const move = (ev) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        let w = startW;
+        let h = startH;
+        if (dir.includes("e")) w = startW + dx;
+        if (dir.includes("s")) h = startH + dy;
+        if (dir.includes("w")) w = startW - dx;
+        if (dir.includes("n")) h = startH - dy;
+        panel.style.width = Math.max(MIN_W, w) + "px";
+        panel.style.height = Math.max(MIN_H, h) + "px";
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    };
+    for (const d of dirs) {
+      const h = document.createElement("div");
+      h.className = "ocgo-rh ocgo-rh-" + d;
+      h.addEventListener("mousedown", onDown(d));
+      panel.appendChild(h);
+    }
   }
 
   function downloadText(filename, text) {
@@ -1039,12 +1104,6 @@
 
     const head = el("div", { id: "ocgo-head" });
     head.appendChild(el("span", { class: "ocgo-title" }, "OpenCodeGo 助手"));
-    const cbEnabled = el("input", { type: "checkbox", id: "ocgo-cfg-enabled" });
-    cbEnabled.checked = config.enabled;
-    head.appendChild(makeToggle("总开关", cbEnabled));
-    const cbLog = el("input", { type: "checkbox", id: "ocgo-cfg-log" });
-    cbLog.checked = config.logEnabled;
-    head.appendChild(makeToggle("日志", cbLog));
     const btnClose = el("button", { id: "ocgo-close", title: "关闭面板" }, "✕");
     head.appendChild(btnClose);
 
@@ -1066,19 +1125,19 @@
     wsRow.append(ws, btnRefreshWs);
     const btns = el("div", { id: "ocgo-btns" });
     const btnFetchAllUsage = el("button", { class: "ocgo-primary" }, "拉取全量用量");
-    const btnClearCache = el("button", {}, "清空缓存");
+    const btnClearCache = el("button", {}, "清空历史");
     const btnStop = el("button", { class: "ocgo-stop", id: "ocgo-btn-stop" }, "⏹ 停止");
     btns.append(btnFetchAllUsage, btnClearCache, btnStop);
     const status = el("div", { id: "ocgo-status" }, "就绪");
-    const cacheState = el("div", { id: "ocgo-cache-state" });
-    const result = el("pre", { id: "ocgo-result" }, "就绪。点击“拉取全量用量”抓取数据，再点“打开用量页面”查看格式化用量。");
+    const cacheState = el("div", { id: "ocgo-history-state" });
+    const result = el("pre", { id: "ocgo-result" }, "就绪。点击“拉取全量用量”抓取数据，可切换到“使用历史”查看明细。");
     // 分析区直接并入数据页
     const rangeRow = el("div", { id: "ocgo-range" });
     const rangeSel = el("select", { id: "ocgo-range-mode" });
     for (const [v, l] of [["today", "当天"], ["1d", "最近1天"], ["7d", "最近7天"], ["30d", "最近30天"], ["custom", "自定义"]]) {
       rangeSel.appendChild(el("option", { value: v }, l));
     }
-    rangeSel.value = "7d";
+    rangeSel.value = "today";
     const customRow = el("div", { id: "ocgo-custom-range" });
     const customFrom = el("input", { type: "datetime-local", id: "ocgo-range-from" });
     const customTo = el("input", { type: "datetime-local", id: "ocgo-range-to" });
@@ -1089,7 +1148,7 @@
     const btnRefreshUsage = el("button", {}, "拉取最新并分析");
     const btnExportReport = el("button", {}, "导出分析报告");
     anaBtns.append(btnAnalyze, btnRefreshUsage, btnExportReport);
-    const analysis = el("div", { id: "ocgo-analysis" }, "选择时间范围后点击“开始分析”（基于缓存，不自动发起全量拉取）。");
+    const analysis = el("div", { id: "ocgo-analysis" }, "选择时间范围后点击“开始分析”（基于历史，不自动发起全量拉取）。");
     dataTab.append(wsRow, btns, status, cacheState, result, rangeRow, customRow, anaBtns, analysis);
 
     // ---- history tab：近期 API 使用情况和成本 ----
@@ -1108,7 +1167,7 @@
     const btnHistoryExport = el("button", {}, "导出历史(CSV)");
     historyBtns.append(btnHistoryExport);
     const historyStatus = el("div", { id: "ocgo-history-status" });
-    const historyTable = el("div", { id: "ocgo-history" }, "选择时间范围后自动展示使用历史（基于缓存）。");
+    const historyTable = el("div", { id: "ocgo-history" }, "选择时间范围后自动展示使用历史（基于历史）。");
     historyTab.append(historyBar, historyCustom, historyBtns, historyStatus, historyTable);
     historyBar.append(el("span", {}, "时间范围"), historyRange);
 
@@ -1130,33 +1189,28 @@
     body.append(dataTab, historyTab, logTab);
     panel.append(head, tabs, body);
     document.body.append(fab, panel);
+    initResize(panel);
 
     ui = { fab, panel, ws, status, cacheState, result, analysis, logList, logStats, btnStop,
-      cbEnabled, cbLog, customFrom, customTo, rangeSel, dataTab, historyTab, historyRange, historyFrom, historyTo, historyStatus, historyTable, logTab, tabData, tabHistory, tabLog };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
+      customFrom, customTo, rangeSel, dataTab, historyTab, historyRange, historyFrom, historyTo, historyStatus, historyTable, logTab, tabData, tabHistory, tabLog };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
     btnClose.addEventListener("click", () => panel.classList.add("ocgo-hidden"));
     logHead.addEventListener("click", () => logList.style.display = logList.style.display === "none" ? "" : "none");
     for (const b of [tabData, tabHistory, tabLog]) {
       b.addEventListener("click", () => switchTab(b.getAttribute("data-tab")));
     }
-    cbEnabled.addEventListener("change", () => {
-      config.enabled = cbEnabled.checked;
-      saveConfig(config);
-      fab.style.display = config.enabled ? "" : "none";
-      if (!config.enabled) panel.classList.add("ocgo-hidden");
-      log("warn", "config", "总开关: " + (config.enabled ? "开" : "关"));
-    });
-    cbLog.addEventListener("change", () => { config.logEnabled = cbLog.checked; saveConfig(config); });
 
     rangeSel.addEventListener("change", () => {
       rangeMode = rangeSel.value;
       customRow.classList.toggle("ocgo-show", rangeMode === "custom");
+      syncRangeInputs(rangeMode, customFrom, customTo); // 自定义时间随预设范围联动
+      runTask("分析", () => runAnalysis(false));         // 切换范围自动分析
     });
 
     btnStop.addEventListener("click", requestStop);
 
     btnRefreshWs.addEventListener("click", refreshWorkspaces);
     btnFetchAllUsage.addEventListener("click", () => runTask("全量用量", () => fetchAllUsageWithProgress(currentWorkspace())));
-    btnClearCache.addEventListener("click", async () => { await clearCache(); setStatus("✅ 缓存已清空"); await renderCacheState(); });
+    btnClearCache.addEventListener("click", async () => { await clearCache(); setStatus("✅ 历史已清空"); await renderCacheState(); });
 
     btnAnalyze.addEventListener("click", () => runTask("分析", () => runAnalysis(false)));
     btnRefreshUsage.addEventListener("click", () => runTask("分析(刷新)", () => runAnalysis(true)));
@@ -1164,6 +1218,7 @@
 
     historyRange.addEventListener("change", () => {
       historyCustom.classList.toggle("ocgo-show", historyRange.value === "custom");
+      syncRangeInputs(historyRange.value, historyFrom, historyTo); // 从/到 随范围变化
       renderHistory();
     });
     historyFrom.addEventListener("change", () => { if (historyRange.value === "custom") renderHistory(); });
@@ -1265,7 +1320,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", "OpenCodeGo 助手已启动", { version: "0.7.0", url: location.href });
+      info("boot", "OpenCodeGo 助手已启动", { version: "0.8.0", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1292,7 +1347,7 @@
 
   // 调试/测试钩子：控制台可查状态；e2e 测试用 cacheUsage/loadUsage/assessUsageCache
   window.__ocgo = {
-    version: "0.7.0",
+    version: "0.8.0",
     debug: () => ({
       logBuffer: logBuffer.length,
       timer: !!logPersistTimer,
