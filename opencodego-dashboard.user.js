@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.3
+// @version      0.9.4
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -340,6 +340,7 @@
       "analysis.col.input": "输入",
       "analysis.col.output": "输出",
       "analysis.col.cacheRead": "缓存读",
+      "analysis.col.cacheHitRate": "缓存命中率",
       "analysis.col.cost": "费用",
       "analysis.col.day": "日期",
       "log.boot": "OpenCodeGo 助手已启动",
@@ -480,6 +481,7 @@
       "analysis.col.input": "Input",
       "analysis.col.output": "Output",
       "analysis.col.cacheRead": "Cache read",
+      "analysis.col.cacheHitRate": "Cache hit rate",
       "analysis.col.cost": "Cost",
       "analysis.col.day": "Date",
       "log.boot": "OpenCodeGo Assistant started",
@@ -1029,6 +1031,10 @@
       d.cacheRead += num(r.cacheReadTokens); d.cost += num(r.cost);
     }
     const cacheHitRate = total.cacheRead + total.input > 0 ? total.cacheRead / (total.cacheRead + total.input) : 0;
+    for (const k in byModel) {
+      const m = byModel[k];
+      m.cacheHitRate = m.cacheRead + m.input > 0 ? m.cacheRead / (m.cacheRead + m.input) : 0;
+    }
     return { total, cacheHitRate, byModel, byDay };
   }
 
@@ -1049,10 +1055,10 @@
     html += "<p style='color:#8b949e'>" + t("analysis.formula", { label: label, n: fmtNum(tot.requests) }) + "</p>";
     const models = Object.entries(analysis.byModel).sort((a, b) => b[1].cost - a[1].cost);
     if (models.length) {
-      html += "<h4>" + t("analysis.byModel") + "</h4><table class='ocgo-tbl'><tr><th>" + t("analysis.col.model") + "</th><th>" + t("analysis.col.requests") + "</th><th>" + t("analysis.col.input") + "</th><th>" + t("analysis.col.output") + "</th><th>" + t("analysis.col.cacheRead") + "</th><th>" + t("analysis.col.cost") + "</th></tr>";
+      html += "<h4>" + t("analysis.byModel") + "</h4><table class='ocgo-tbl'><tr><th>" + t("analysis.col.model") + "</th><th>" + t("analysis.col.requests") + "</th><th>" + t("analysis.col.input") + "</th><th>" + t("analysis.col.output") + "</th><th>" + t("analysis.col.cacheRead") + "</th><th>" + t("analysis.col.cacheHitRate") + "</th><th>" + t("analysis.col.cost") + "</th></tr>";
       for (const [m, v] of models) {
         html += "<tr><td>" + m + "</td><td>" + fmtNum(v.requests) + "</td><td>" + fmtNum(v.input) + "</td><td>" + fmtNum(v.output) +
-          "</td><td>" + fmtNum(v.cacheRead) + "</td><td>" + fmtUsd(v.cost) + "</td></tr>";
+          "</td><td>" + fmtNum(v.cacheRead) + "</td><td>" + (v.cacheHitRate * 100).toFixed(2) + "%" + "</td><td>" + fmtUsd(v.cost) + "</td></tr>";
       }
       html += "</table>";
     }
@@ -1699,7 +1705,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.3", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.4", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1726,7 +1732,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.3",
+    version: "0.9.4",
     cacheUsage,
     loadUsage,
     assessUsageCache,

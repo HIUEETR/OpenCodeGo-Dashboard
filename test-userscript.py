@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.3 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.4 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -226,6 +226,16 @@ def main():
         page.select_option("#ocgo-range-mode", "7d")
         page.wait_for_function("() => (document.querySelector('#ocgo-analysis').textContent || '').includes('缓存命中率')", timeout=15000)
         print("auto-analyze on range switch OK")
+        # v0.9.4: by-model table has a per-model cache hit rate column
+        model_tbl = page.locator("#ocgo-analysis table.ocgo-tbl").first
+        model_head = model_tbl.locator("tr").first.locator("th").all_text_contents()
+        print("model table head:", model_head)
+        assert "缓存命中率" in model_head, model_head
+        cells = model_tbl.locator("tr").nth(1).locator("td").all_text_contents()
+        print("model row:", cells)
+        assert cells[5].endswith("%"), cells  # cacheRead 27000 / (input 3000 + cacheRead 27000) = 90.00%
+        assert cells[5] == "90.00%", cells
+        print("per-model cache hit rate OK")
         # data-page custom inputs synced after choosing 7d then custom
         page.select_option("#ocgo-range-mode", "custom")
         page.wait_for_timeout(200)
