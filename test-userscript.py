@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.6.0 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.0 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -59,6 +59,8 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context()
+        # v0.9.0: default to zh UI (Playwright browsers default to en-US); language switch is tested below
+        ctx.add_init_script("localStorage.setItem('ocgo:config', JSON.stringify({lang:'zh', enabled:true}))")
         ctx.add_init_script(USER_JS.read_text(encoding="utf-8"))
         page = ctx.new_page()
         errors = []
@@ -107,6 +109,22 @@ def main():
         assert head_labels == [], head_labels  # 总开关/日志/调试 勾选框全部移除
         assert page.locator("#ocgo-head input[type=checkbox]").count() == 0
         print("UI OK: tabs=数据/使用历史/日志, no Keys/open-view, no toggles")
+
+        # v0.9.0: language switch (zh -> en -> zh) rebuilds the UI in-place
+        page.select_option("#ocgo-lang", "en")
+        page.wait_for_timeout(300)
+        en_tabs = page.locator("#ocgo-tabs button").all_text_contents()
+        print("en tabs:", en_tabs)
+        assert en_tabs == ["Data", "Usage History", "Logs"], en_tabs
+        assert page.locator("#ocgo-btns button", has_text="Fetch all usage").count() == 1
+        assert page.locator("#ocgo-btns button", has_text="Clear history").count() == 1
+        assert page.locator("#ocgo-close").is_visible()
+        page.select_option("#ocgo-lang", "zh")
+        page.wait_for_timeout(300)
+        zh_tabs = page.locator("#ocgo-tabs button").all_text_contents()
+        assert zh_tabs == ["数据", "使用历史", "日志"], zh_tabs
+        assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
+        print("language switch OK: en tabs + buttons, back to zh")
 
         page.evaluate(
             """(ws) => { const s = document.querySelector("#ocgo-ws"); const o = document.createElement("option");
@@ -226,6 +244,17 @@ def main():
         h = page.evaluate("() => document.querySelector('#ocgo-panel').style.height")
         assert w == str(size["w"]) + "px" and h == str(size["h"]) + "px", (w, h, size)
         print("resize restored after reload OK")
+
+        # v0.9.0: log list vertical size follows the resized panel (was fixed at 150px)
+        if not page.locator("#ocgo-panel").is_visible():
+            page.locator("#ocgo-fab").click()
+            page.wait_for_timeout(300)
+        page.locator("#ocgo-tabs button", has_text="日志").click()
+        page.wait_for_timeout(300)
+        log_h = page.locator("#ocgo-log-list").evaluate("el => el.clientHeight")
+        print("log list height after resize:", log_h)
+        assert log_h > 150, log_h
+        print("log list grows with panel height OK")
 
         browser.close()
 
