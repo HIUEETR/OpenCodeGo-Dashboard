@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.4 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.5 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -236,6 +236,13 @@ def main():
         assert cells[5].endswith("%"), cells  # cacheRead 27000 / (input 3000 + cacheRead 27000) = 90.00%
         assert cells[5] == "90.00%", cells
         print("per-model cache hit rate OK")
+        # v0.9.5: status trimmed (no ｜持久历史 note) and cache state uses 24h time, no 用量[持久] prefix
+        status_text = page.locator("#ocgo-status").text_content()
+        assert "持久历史" not in status_text and "｜" not in status_text, status_text
+        cache_state_text = page.locator("#ocgo-history-state").text_content()
+        assert "用量[持久]" not in cache_state_text, cache_state_text
+        assert _re.search(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}", cache_state_text), cache_state_text
+        print("status/cache-state trimmed + 24h time OK")
         # data-page custom inputs synced after choosing 7d then custom
         page.select_option("#ocgo-range-mode", "custom")
         page.wait_for_timeout(200)

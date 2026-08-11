@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.4
+// @version      0.9.5
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -306,17 +306,16 @@
       "status.analysisStopped": "⏹ 已停止，基于已拉取的 {n} 条分析",
       "status.noHistory": "⚠ 没有历史数据。请先到“数据”页点“拉取全量用量”，或点“拉取最新并分析”。",
       "status.analysisNoHistoryHtml": "还没有用量历史。<br>1) 数据页 → <b>拉取全量用量</b>（一次完整抓取）；<br>2) 或直接点这里右上角 <b>拉取最新并分析</b>。",
-      "status.analysisDone": "✅ 分析完成：{label}，区间内 {n} 条（历史共 {m} 条）｜{note}",
-      "status.refreshed": "已刷新",
+      "status.analysisDone": "✅ 分析完成：{label}，区间内 {n} 条（历史共 {m} 条）",
       "status.taskRunning": "⏳ {label} 执行中...",
       "status.taskStopped": "⏹ 已停止：{label}",
       "status.taskFailed": "❌ {label} 失败：{err}（详细错误见日志）",
       "cache.none": "没有用量历史",
       "cache.partial": "历史不完整（仅 {n} 条，来自页面捕获，未做过全量拉取；建议点“拉取最新并分析”）",
       "cache.ok": "持久历史（全量抓取于 {time}，共 {n} 条；无过期，手动清空才消失）",
-      "cache.persistent": "持久",
       "cache.incomplete": "不完整",
-      "cache.usageState": "用量[{state}] {n}条 @ {time}",
+      "cache.usageIncompleteTag": "用量[不完整] ",
+      "cache.usageState": "{state}{n}条 @ {time}",
       "cache.statePrefix": "历史：",
       "cache.stateNone": "历史：无（拉取后自动记录）",
       "task.fetchAll": "全量用量",
@@ -447,17 +446,16 @@
       "status.analysisStopped": "⏹ Stopped; analyzing the {n} fetched rows",
       "status.noHistory": "⚠ No history data yet. Go to the Data tab and click “Fetch all usage”, or click “Fetch latest & analyze”.",
       "status.analysisNoHistoryHtml": "No usage history yet.<br>1) Data tab → <b>Fetch all usage</b> (one complete fetch);<br>2) or click <b>Fetch latest & analyze</b> above.",
-      "status.analysisDone": "✅ Analysis complete: {label}, {n} rows in range ({m} rows in history)｜{note}",
-      "status.refreshed": "refreshed",
+      "status.analysisDone": "✅ Analysis complete: {label}, {n} rows in range ({m} rows in history)",
       "status.taskRunning": "⏳ Running {label}...",
       "status.taskStopped": "⏹ Stopped: {label}",
       "status.taskFailed": "❌ {label} failed: {err} (see logs for details)",
       "cache.none": "No usage history",
       "cache.partial": "History incomplete ({n} rows from page captures; no full fetch yet; try “Fetch latest & analyze”)",
       "cache.ok": "Persistent history (full fetch at {time}, {n} rows; never expires, cleared only manually)",
-      "cache.persistent": "persistent",
       "cache.incomplete": "incomplete",
-      "cache.usageState": "Usage[{state}] {n} rows @ {time}",
+      "cache.usageIncompleteTag": "Usage[incomplete] ",
+      "cache.usageState": "{state}{n} rows @ {time}",
       "cache.statePrefix": "History: ",
       "cache.stateNone": "History: none (records are kept automatically after a fetch)",
       "task.fetchAll": "full usage",
@@ -1223,7 +1221,7 @@
     }
     return { state: "ok", text: t("cache.ok", { time: fmtTime(meta.lastFullFetchAt), n: meta.count }), meta, usage };
   }
-  function fmtTime(ms) { return ms ? new Date(ms).toLocaleString() : "?"; }
+  function fmtTime(ms) { return ms ? fmtTime24(new Date(ms).toISOString()) : "?"; }
   // 24 小时制：yyyy/MM/dd HH:mm:ss
   function fmtTime24(iso) {
     const d = new Date(iso);
@@ -1237,7 +1235,7 @@
     const parts = [];
     if (ws) {
       const a = await assessUsageCache(ws);
-      if (a.state !== "none") parts.push(t("cache.usageState", { state: a.state === "ok" ? t("cache.persistent") : t("cache.incomplete"), n: a.meta.count, time: fmtTime(a.meta.lastUpdatedAt) }));
+      if (a.state !== "none") parts.push(t("cache.usageState", { state: a.state === "ok" ? "" : t("cache.usageIncompleteTag"), n: a.meta.count, time: fmtTime(a.meta.lastUpdatedAt) }));
     }
     ui.cacheState.textContent = parts.length ? t("cache.statePrefix") + parts.join("；") : t("cache.stateNone");
   }
@@ -1367,7 +1365,7 @@
     }
     setAnalysis(html);
     info("analysis", t("log.analysisDone", { label: range.label }), { range, total: analysis.total, cache: cacheStateFlag });
-    setStatus(t("status.analysisDone", { label: range.label, n: analysis.total.requests, m: usage.records.length, note: cacheNote || t("status.refreshed") }));
+    setStatus(t("status.analysisDone", { label: range.label, n: analysis.total.requests, m: usage.records.length }));
   }
 
   // 自定义时间输入随预设范围联动（当天/1d/7d/30d/all）
@@ -1705,7 +1703,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.4", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.5", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1732,7 +1730,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.4",
+    version: "0.9.5",
     cacheUsage,
     loadUsage,
     assessUsageCache,
