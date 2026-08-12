@@ -67,3 +67,8 @@ The script will **auto-update** when new versions are released.
 node test-seroval-core.cjs
 python test-userscript.py
 ```
+
+## License
+
+[MIT License](LICENSE) © 2026 HIU
+

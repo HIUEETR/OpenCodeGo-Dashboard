@@ -67,3 +67,8 @@
 node test-seroval-core.cjs
 python test-userscript.py
 ```
+
+## 许可证
+
+[MIT License](LICENSE) © 2026 HIU
+
