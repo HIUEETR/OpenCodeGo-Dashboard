@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
 </p>
 # OpenCodeGo 用量助手（油猴脚本）v0.9.7
@@ -10,7 +10,9 @@
 - 持久历史（IndexedDB）；历史完整时全量拉取**命中历史即停止翻页**，历史不完整时翻到底并标记完整。
 - 全量拉取可停止、互斥、防重复页；日志持久化；面板可拖拽调整大小并记忆；**中/英文界面**。
 
-![1786522202431](image/README/1786522202431.png)![1786522229164](image/README/1786522229164.png)
+<p>
+  <img src="image/README/1786522202431.png" width="50%" alt="界面截图 1" /><img src="image/README/1786522229164.png" width="50%" alt="界面截图 2" />
+</p>
 
 <p align="center">
   <img src="image/README/1786480145037.png" width="49%" alt="用量分析界面" />
