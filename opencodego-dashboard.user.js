@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.8
+// @version      0.9.9
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
