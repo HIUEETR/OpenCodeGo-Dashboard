@@ -6,6 +6,8 @@
 
 # OpenCodeGo 用量助手（油猴脚本）v0.9.7
 
+中文 | **[English](README.md)**
+
 在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
 
 - 页面一致：`POST /_server`，参数走 seroval JSON body（`X-Server-Id` / `X-Server-Instance` 头）。
