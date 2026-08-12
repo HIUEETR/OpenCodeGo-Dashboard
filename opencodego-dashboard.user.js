@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.6
+// @version      0.9.7
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -1327,7 +1327,7 @@
     info("history", t("log.historyExported"), { rows: rows.length, range: range.label });
   }
 
-  let rangeMode = "7d";
+  let rangeMode = "today"; // 与下拉框默认“当天”保持一致（首次分析不再误用最近7天）
   function currentRange() {
     const now = new Date();
     const end = now.getTime();
@@ -1542,6 +1542,7 @@
       rangeSel.appendChild(el("option", { value: v }, l));
     }
     rangeSel.value = "today";
+    rangeMode = rangeSel.value; // 初始化状态与下拉框一致
     const customRow = el("div", { id: "ocgo-custom-range" });
     const customFrom = el("input", { type: "datetime-local", id: "ocgo-range-from" });
     const customTo = el("input", { type: "datetime-local", id: "ocgo-range-to" });
@@ -1725,7 +1726,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.6", url: location.href });
+      info("boot", t("log.boot"), { version: "0.9.7", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1752,7 +1753,7 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.6",
+    version: "0.9.7",
     cacheUsage,
     loadUsage,
     assessUsageCache,

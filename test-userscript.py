@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.5 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.9.7 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -222,6 +222,11 @@ def main():
         page.locator("#ocgo-tabs button", has_text="数据").click()
         page.wait_for_timeout(200)
         assert page.locator("#ocgo-range-mode").input_value() == "today", "analysis range should default to today"
+        # v0.9.7 regression: first "开始分析" (without touching the range select) must use 当天, not 最近7天
+        page.locator("#ocgo-analyze-btns button", has_text="开始分析").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('分析完成：当天')", timeout=15000)
+        assert "0 条" in page.locator("#ocgo-status").text_content(), page.locator("#ocgo-status").text_content()
+        print("first analysis uses 当天 OK")
         # switch range -> auto analyze (cache exists with A/B)
         page.select_option("#ocgo-range-mode", "7d")
         page.wait_for_function("() => (document.querySelector('#ocgo-analysis').textContent || '').includes('缓存命中率')", timeout=15000)

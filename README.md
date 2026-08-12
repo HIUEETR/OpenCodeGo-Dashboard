@@ -1,4 +1,7 @@
-# OpenCodeGo 用量助手（油猴脚本）v0.9.6
+<p align="center">
+  <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
+</p>
+# OpenCodeGo 用量助手（油猴脚本）v0.9.7
 
 在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
 
@@ -7,10 +10,16 @@
 - 持久历史（IndexedDB，**无过期**，仅手动清空）；历史完整时全量拉取**命中历史即停止翻页**，历史不完整时翻到底并标记完整。
 - 全量拉取可停止、互斥、防重复页；日志持久化；面板可拖拽调整大小并记忆；**中/英文界面**（默认跟随浏览器语言）。
 
+<p align="center">
+  <img src="image/README/1786480145037.png" width="49%" alt="用量分析界面" />
+  <img src="image/README/1786480163286.png" width="49%" alt="使用历史界面" />
+</p>
+
 ## 版本历史
 
 **v0.9.x（近期）**
 
+> v0.9.7 变更：修复首次分析范围错误——默认状态下拉框显示“当天”但实际按“最近7天”分析（`rangeMode` 初始值与下拉框不一致），现默认与分析状态统一为“当天”。
 > v0.9.6 变更：界面重绘为深色终端风格（黑银灰配色、网格背景、终端窗口头部圆点、白色高亮），与 `OpenCodeGo-Dashboard-banner.svg` 风格统一；banner 内容同步更新为贴合项目（全量用量/分析/缓存命中率/费用）。
 > v0.9.5 变更：分析完成状态与历史状态的时间统一为 24 小时制 `yyyy/MM/dd HH:mm:ss`；状态栏不再追加“持久历史（全量抓取于…）”说明，历史状态行去掉“用量[持久]”前缀（不完整时仍保留“用量[不完整]”）。
 > v0.9.4 变更：数据页“按模型”表格新增每模型的**缓存命中率**列（缓存读 / (新输入 + 缓存读)）。
@@ -27,14 +36,14 @@
 
 ## 文件
 
-| 文件                             | 说明                                                 |
-| -------------------------------- | ---------------------------------------------------- |
-| `opencodego-dashboard.user.js` | 油猴主脚本（自包含）                                 |
-| `seroval-core.cjs`             | seroval 编解码核心（Node 可测，与 user.js 内联一致） |
-| `test-seroval-core.cjs`        | Node 单元测试                                        |
-| `test-userscript.py`           | Playwright 端到端冒烟测试                            |
-| `OpenCodeGo-Dashboard-banner.svg` | GitHub README 横幅（深色终端风格，含动画） |
-| `README.md`                    | 本说明                                               |
+| 文件                                | 说明                                                 |
+| ----------------------------------- | ---------------------------------------------------- |
+| `opencodego-dashboard.user.js`    | 油猴主脚本（自包含）                                 |
+| `seroval-core.cjs`                | seroval 编解码核心（Node 可测，与 user.js 内联一致） |
+| `test-seroval-core.cjs`           | Node 单元测试                                        |
+| `test-userscript.py`              | Playwright 端到端冒烟测试                            |
+| `OpenCodeGo-Dashboard-banner.svg` | GitHub README 横幅（深色终端风格，含动画）           |
+| `README.md`                       | 本说明                                               |
 
 ## 安装
 
