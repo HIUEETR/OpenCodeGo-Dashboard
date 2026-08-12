@@ -1280,7 +1280,7 @@
     if (mode === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); return { from: d.getTime(), to: end, label: t("range.today") }; }
     if (mode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: t("range.1d") };
     if (mode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: t("range.30d") };
-    if (mode === "all") return { from: 0, to: end, label: t("range.all") };
+    if (mode === "all") return { from: 0, to: Infinity, label: t("range.all") };
     if (mode === "custom") {
       const from = ui.historyFrom.value ? new Date(ui.historyFrom.value).getTime() : 0;
       const to = ui.historyTo.value ? new Date(ui.historyTo.value).getTime() : end;
@@ -1347,7 +1347,7 @@
     }
     if (rangeMode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: t("range.1d") };
     if (rangeMode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: t("range.30d") };
-    if (rangeMode === "all") return { from: 0, to: end, label: t("range.all") };
+    if (rangeMode === "all") return { from: 0, to: Infinity, label: t("range.all") };
     if (rangeMode === "custom") {
       const from = ui.customFrom.value ? new Date(ui.customFrom.value).getTime() : end - 7 * 24 * 3600 * 1000;
       const to = ui.customTo.value ? new Date(ui.customTo.value).getTime() : end;
@@ -1692,7 +1692,7 @@
     const report = {
       exportedAt: new Date().toISOString(),
       workspace: ws,
-      range: { label: range.label, from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() },
+      range: { label: range.label, from: new Date(range.from).toISOString(), to: range.to === Infinity ? "Infinity" : new Date(range.to).toISOString() },
       cache: usage.meta || null,
       total: analysis.total,
       cacheHitRate: analysis.cacheHitRate,
