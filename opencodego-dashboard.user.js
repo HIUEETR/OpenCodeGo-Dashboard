@@ -7,6 +7,10 @@
 // @match        https://opencode.ai/workspace/*
 // @run-at       document-start
 // @grant        none
+// @homepageURL  https://github.com/HIUEETR/OpenCodeGo-Dashboard
+// @supportURL   https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues
+// @updateURL    https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js
 // ==/UserScript==
 
 (function () {

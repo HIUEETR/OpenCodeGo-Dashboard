@@ -1,0 +1,40 @@
+name: Release Userscript
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Verify version in userscript
+        run: |
+          SCRIPT_VERSION=$(grep -oP '@version\s+\K[\d.]+' opencodego-dashboard.user.js)
+          if [ "$SCRIPT_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "Error: Script version ($SCRIPT_VERSION) != tag version (${{ steps.version.outputs.VERSION }})"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: opencodego-dashboard.user.js
+          body: |
+            ## OpenCodeGo Dashboard Assistant v${{ steps.version.outputs.VERSION }}
+
+            ### Installation
+            Click: [Install/Update Script](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
+
+            ### Changes
+            See [commit history](https://github.com/HIUEETR/OpenCodeGo-Dashboard/commits/v${{ steps.version.outputs.VERSION }})
