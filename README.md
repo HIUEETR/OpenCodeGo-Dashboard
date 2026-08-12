@@ -4,10 +4,6 @@
 
 <div align="center">
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
-</div>
-
 # OpenCodeGo Usage Assistant (Userscript) v0.9.7
 
 Fully fetch and persist your usage history on the `https://opencode.ai` dashboard, with **usage analytics** (Today / 1d / 7d / 30d / All / Custom — input/output, cache hit rate, cost) and **usage history**.

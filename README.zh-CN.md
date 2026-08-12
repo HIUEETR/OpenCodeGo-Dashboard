@@ -4,10 +4,6 @@
 
 <div align="center">
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
-</div>
-
 # OpenCodeGo 用量助手（油猴脚本）v0.9.7
 
 在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
@@ -60,6 +56,6 @@ Tampermonkey/Violentmonkey → 新建脚本 → 粘贴 `opencodego-dashboard.use
 ## 测试
 
 ```powershell
-node test-seroval-core.cjs                
-python test-userscript.py                    
+node test-seroval-core.cjs              
+python test-userscript.py                  
 ```
