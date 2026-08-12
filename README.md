@@ -2,7 +2,7 @@
   <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard Usage Assistant Banner" />
 </p>
 
-# OpenCodeGo Usage Assistant (Userscript) v0.9.7
+# OpenCodeGo Usage Assistant (Userscript) v0.9.9
 
 **[中文](README.zh-CN.md)** | English
 
