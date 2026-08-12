@@ -53,6 +53,6 @@ Tampermonkey/Violentmonkey → 新建脚本 → 粘贴 `opencodego-dashboard.use
 ## 测试
 
 ```powershell
-node test-seroval-core.cjs                    # 编解码单测
-python test-userscript.py                     # 浏览器端到端（需安装 playwright；拦截 /_server 离线验证）
+node test-seroval-core.cjs                
+python test-userscript.py                    
 ```
