@@ -2,8 +2,6 @@
   <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
 </p>
 
-<div align="center">
-
 # OpenCodeGo 用量助手（油猴脚本）v0.9.7
 
 中文 | **[English](README.md)**
@@ -14,8 +12,6 @@
 - 内容指纹去重：`请求时间 + 输入/输出/推理/缓存读(+缓存写/模型/费用)` 相同 => 同一条记录。
 - 持久历史（IndexedDB）；历史完整时全量拉取**命中历史即停止翻页**，历史不完整时翻到底并标记完整。
 - 全量拉取可停止、互斥、防重复页；日志持久化；面板可拖拽调整大小并记忆；**中/英文界面**。
-
-</div>
 
 <p align="center">
   <img src="image/README/1786522202431.png" width="49%" alt="界面截图 1" />

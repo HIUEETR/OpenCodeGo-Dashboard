@@ -2,8 +2,6 @@
   <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard Usage Assistant Banner" />
 </p>
 
-<div align="center">
-
 # OpenCodeGo Usage Assistant (Userscript) v0.9.7
 
 **[中文](README.zh-CN.md)** | English
@@ -14,8 +12,6 @@ Fully fetch and persist your usage history on the `https://opencode.ai` dashboar
 - Content fingerprint dedup: identical `request time + input/output/reasoning/cache reads (+cache writes/model/cost)` => same record.
 - Persistent history (IndexedDB); when history is complete, full fetch **stops paging as soon as history is hit**; when incomplete, it pages to the end and marks itself complete.
 - Full fetch can be stopped, is mutually exclusive, and prevents duplicate pages; logs are persisted; the panel is draggable/resizable and remembers its size; **Chinese/English UI**.
-
-</div>
 
 <p align="center">
   <img src="image/README/1786522202431.png" width="49%" alt="Screenshot 1" />
