@@ -20,10 +20,6 @@
   <img src="image/README/1786522229164.png" width="49%" alt="界面截图 2" />
 </p>
 
-<p align="center">
-  <img src="image/README/1786480145037.png" width="49%" alt="用量分析界面" />
-  <img src="image/README/1786480163286.png" width="49%" alt="使用历史界面" />
-</p>
 
 ## 文件
 
@@ -36,7 +32,18 @@
 
 ## 安装
 
-Tampermonkey/Violentmonkey → 新建脚本 → 粘贴 `opencodego-dashboard.user.js` 保存（或拖入安装）→ 登录 `https://opencode.ai`。
+1. **安装 Tampermonkey**（如果尚未安装）：
+   - [Chrome 应用商店](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
+   - [Firefox 附加组件](https://addons.mozilla.org/zh-CN/firefox/addon/tampermonkey/)
+   - [Edge 加载项](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
+
+2. **安装脚本**：
+   - 点击：[**安装 OpenCodeGo 仪表盘助手**](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
+   - Tampermonkey 会提示你安装 → 点击**安装**
+
+3. **登录** `https://opencode.ai`，脚本将自动激活。
+
+脚本会在发布新版本时**自动更新**。
 
 ## 使用（数据 / 使用历史 / 日志）
 
