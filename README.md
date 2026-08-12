@@ -13,8 +13,11 @@ Fully fetch and persist your usage history on the `https://opencode.ai` dashboar
 - Persistent history (IndexedDB); when history is complete, full fetch **stops paging as soon as history is hit**; when incomplete, it pages to the end and marks itself complete.
 - Full fetch can be stopped, is mutually exclusive, and prevents duplicate pages; logs are persisted; the panel is draggable/resizable and remembers its size; **Chinese/English UI**.
 
-<p>
-  <img src="image/README/1786522202431.png" width="50%" alt="Screenshot 1" /><img src="image/README/1786522229164.png" width="50%" alt="Screenshot 2" />
+</div>
+
+<p align="center">
+  <img src="image/README/1786522202431.png" width="49%" alt="Screenshot 1" />
+  <img src="image/README/1786522229164.png" width="49%" alt="Screenshot 2" />
 </p>
 
 <p align="center">
