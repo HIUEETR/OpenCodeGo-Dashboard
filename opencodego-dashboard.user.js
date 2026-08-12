@@ -1,4 +1,4 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
 // @version      0.9.7
@@ -1098,9 +1098,9 @@
   function css() {
     return `
 #ocgo-fab{position:fixed;right:18px;bottom:18px;z-index:2147483646;width:46px;height:46px;border-radius:50%;
-  background:#0b0d11;color:#dfe4e9;border:1px solid rgba(255,255,255,.18);cursor:pointer;font-size:18px;
-  box-shadow:0 2px 14px rgba(0,0,0,.5);transition:border-color .15s,color .15s,transform .1s;}
-#ocgo-fab:hover{border-color:rgba(255,255,255,.5);color:#fff;transform:scale(1.05);}
+  background:#0b0d11;color:#dfe4e9;border:2px solid #fff;cursor:pointer;font-size:18px;
+  box-shadow:0 0 0 3px rgba(255,255,255,.18),0 2px 14px rgba(0,0,0,.5);transition:border-color .15s,color .15s,transform .1s,box-shadow .15s;}
+#ocgo-fab:hover{border-color:#fff;box-shadow:0 0 0 4px rgba(255,255,255,.35),0 2px 14px rgba(0,0,0,.5);color:#fff;transform:scale(1.05);}
 #ocgo-panel{position:fixed;right:18px;bottom:74px;z-index:2147483647;width:480px;max-width:calc(100vw - 36px);
   color-scheme:dark;max-height:calc(100vh - 100px);display:flex;flex-direction:column;color:#e4e8ed;
   background:
