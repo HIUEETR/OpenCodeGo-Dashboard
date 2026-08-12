@@ -1097,10 +1097,16 @@
 
   function css() {
     return `
-#ocgo-fab{position:fixed;right:18px;bottom:18px;z-index:2147483646;width:46px;height:46px;border-radius:50%;
+#ocgo-fab{position:fixed;right:18px;bottom:18px;z-index:2147483646;width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
   background:#0b0d11;color:#dfe4e9;border:2px solid #fff;cursor:pointer;font-size:18px;
   box-shadow:0 0 0 3px rgba(255,255,255,.18),0 2px 14px rgba(0,0,0,.5);transition:border-color .15s,color .15s,transform .1s,box-shadow .15s;}
 #ocgo-fab:hover{border-color:#fff;box-shadow:0 0 0 4px rgba(255,255,255,.35),0 2px 14px rgba(0,0,0,.5);color:#fff;transform:scale(1.05);}
+#ocgo-fab svg{width:34px;height:34px;display:block;flex:0 0 auto;}
+#ocgo-fab .ocgo-logo-diamond{transform-box:fill-box;transform-origin:center;animation:ocgoSpin 8s linear infinite;}
+#ocgo-fab .ocgo-logo-check{animation:ocgoPulse 2.5s ease-in-out infinite;}
+@keyframes ocgoSpin{to{transform:rotate(360deg);}}
+@keyframes ocgoPulse{0%,100%{stroke-opacity:.18;}50%{stroke-opacity:.55;}}
+@media (prefers-reduced-motion:reduce){#ocgo-fab .ocgo-logo-diamond,#ocgo-fab .ocgo-logo-check{animation:none;}}
 #ocgo-panel{position:fixed;right:18px;bottom:74px;z-index:2147483647;width:480px;max-width:calc(100vw - 36px);
   color-scheme:dark;max-height:calc(100vh - 100px);display:flex;flex-direction:column;color:#e4e8ed;
   background:
@@ -1489,7 +1495,8 @@
     try { document.execCommand("copy"); info("log", t("log.copied")); } catch (e) { warn("log", t("log.copyFail"), String(e)); }
     ta.remove();
   }  function buildUI() {
-    const fab = el("button", { id: "ocgo-fab", title: t("app.title") }, "⚙");
+    const fab = el("button", { id: "ocgo-fab", title: t("app.title") });
+    fab.innerHTML = '<svg viewBox="0 0 164 164" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><defs><linearGradient id="ocgoFabAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#b8c0cc"/><stop offset="1" stop-color="#6f7885"/></linearGradient></defs><path class="ocgo-logo-diamond" d="M48 67 L77 38 L106 67 L77 96 Z" fill="none" stroke="url(#ocgoFabAccent)" stroke-width="13" stroke-linejoin="round"/><path class="ocgo-logo-check" d="M58 91 L87 62 L116 91" fill="none" stroke="#ffffff" stroke-opacity=".38" stroke-width="7" stroke-linecap="round"/></svg>';
     const panel = el("div", { id: "ocgo-panel" });
     panel.classList.add("ocgo-hidden");
     const savedSize = loadPanelSize();
