@@ -19,7 +19,6 @@ Fully fetch and persist your usage history on the `https://opencode.ai` dashboar
   <img src="image/README/1786522229164.png" width="49%" alt="Screenshot 2" />
 </p>
 
-
 ## Files
 
 | File                             | Description            |
@@ -32,14 +31,14 @@ Fully fetch and persist your usage history on the `https://opencode.ai` dashboar
 ## Installation
 
 1. **Install Tampermonkey** (if not already installed):
+
    - [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
    - [Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
    - [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
-
 2. **Install the script**:
+
    - Click: [**Install OpenCodeGo Dashboard Assistant**](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
    - Tampermonkey will prompt you to install → click **Install**
-
 3. **Sign in** to `https://opencode.ai` and the script will activate automatically.
 
 The script will **auto-update** when new versions are released.
@@ -72,4 +71,3 @@ python test-userscript.py
 ## License
 
 [MIT License](LICENSE) © 2026 HIU
-
