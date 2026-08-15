@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      0.9.9
+// @version      0.10.0
 // @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
 // @author       hiu
 // @match        https://opencode.ai/workspace/*
@@ -224,6 +224,7 @@
   const DEFAULT_CONFIG = {
     enabled: true,
     maxUsagePages: 500,
+    maxPageRetries: 4,
     lang: "auto", // auto | zh | en
   };
   function loadConfig() {
@@ -256,6 +257,9 @@
       "ws.refreshFail": "❌ 刷新工作区失败：未登录？请先在 opencode.ai 登录。",
       "usage.fetchAll": "拉取全量用量",
       "usage.clearHistory": "清空历史",
+      "usage.clearConfirm": "确认清空全部用量历史？",
+      "usage.clearConfirmYes": "确认清空",
+      "usage.clearConfirmNo": "取消",
       "usage.stop": "⏹ 停止",
       "range.label": "时间范围",
       "range.from": "从",
@@ -304,6 +308,7 @@
       "status.fetchHitHistory": "✅ 命中历史，提前停止翻页：本次拉到 {n} 条（含历史重合）已与历史合并，写入历史{note}",
       "status.fetchDone": "✅ 全量用量拉取完成：共 {n} 条，已写入历史（完整）",
       "status.fetchFail": "❌ 全量拉取失败：{err}",
+      "status.degraded": "｜退级中",
       "status.historyCleared": "✅ 历史已清空",
       "status.fetchingLatest": "⏳ 正在拉取最新全量用量...",
       "status.fetchLatestPage": "⏳ 第 {page} 页，已累计 {n} 条",
@@ -355,6 +360,10 @@
       "log.decodeFail": "响应解码失败 {name}",
       "log.rpcOk": "成功 {name}",
       "log.duplicatePage": "第 {page} 页与上一页完全相同，判定分页失效，停止拉取",
+      "log.retryPage": "第 {page} 页请求失败，重试 {attempt}/{max}：{err}",
+      "log.degradedOn": "检测到连接池/限流类错误，进入退级模式（页间延迟 {delay}ms）",
+      "log.degradedOff": "连续 {n} 页成功，退出退级模式",
+      "log.retryExhausted": "第 {page} 页重试 {max} 次仍失败，中止拉取",
       "log.fetchStopped": "全量拉取已停止 {ws}",
       "log.fetchHitHistory": "全量拉取命中历史，提前停止 {ws}",
       "log.fetchDone": "全量用量拉取完成 {ws}",
@@ -396,6 +405,9 @@
       "ws.refreshFail": "❌ Failed to refresh workspaces: not signed in? Please sign in at opencode.ai.",
       "usage.fetchAll": "Fetch all usage",
       "usage.clearHistory": "Clear history",
+      "usage.clearConfirm": "Clear all usage history?",
+      "usage.clearConfirmYes": "Yes, clear",
+      "usage.clearConfirmNo": "Cancel",
       "usage.stop": "⏹ Stop",
       "range.label": "Time range",
       "range.from": "From",
@@ -444,6 +456,7 @@
       "status.fetchHitHistory": "✅ Hit history, stopped paging early: this run got {n} rows (incl. duplicates) merged into history{note}",
       "status.fetchDone": "✅ Full usage fetch complete: {n} rows written to history (complete)",
       "status.fetchFail": "❌ Full fetch failed: {err}",
+      "status.degraded": " (degraded)",
       "status.historyCleared": "✅ History cleared",
       "status.fetchingLatest": "⏳ Fetching the latest full usage...",
       "status.fetchLatestPage": "⏳ Page {page}: {n} rows so far",
@@ -495,6 +508,10 @@
       "log.decodeFail": "Response decode failed {name}",
       "log.rpcOk": "OK {name}",
       "log.duplicatePage": "Page {page} is identical to the previous page; pagination seems broken, stopping",
+      "log.retryPage": "Page {page} request failed, retry {attempt}/{max}: {err}",
+      "log.degradedOn": "Pool/rate-limit error detected, entering degraded mode ({delay}ms/page)",
+      "log.degradedOff": "Exited degraded mode after {n} clean pages",
+      "log.retryExhausted": "Page {page} still failing after {max} retries, aborting fetch",
       "log.fetchStopped": "Full usage fetch stopped {ws}",
       "log.fetchHitHistory": "Full usage fetch hit history, stopped early {ws}",
       "log.fetchDone": "Full usage fetch complete {ws}",
@@ -801,7 +818,67 @@
       : (data && typeof data === "object" ? { keys: Object.keys(data).slice(0, 8) } : data);
     info("rpc", t("log.rpcOk", { name: name }), summary);
     return data;
-  }  // =====================================================================
+  }
+
+  // 可重试错误判定：连接池/限流/瞬时 5xx/网络类错误可重试；解码失败、未知函数、用户中止不算
+  function isRetryableError(e) {
+    if (!e) return false;
+    if (e && e.name === "AbortError") return false;
+    const msg = String(e && e.message || e);
+    return /HTTP (429|5\d\d)/.test(msg) ||
+      /ResourceExhausted|connection limit|transaction pool|rate limit|too many|timed out|timeout|ECONNRESET|Failed to fetch|network error|socket/.test(msg);
+  }
+
+  function abortError() {
+    return new DOMException("The operation was aborted.", "AbortError");
+  }
+
+  // 可被 AbortSignal 中断的等待；中断时抛 AbortError（复用“停止任务”语义）
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) {
+        reject(signal.reason || abortError());
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason || abortError());
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  // 带退避重试的 RPC：可重试错误最多重试 maxRetries 次（默认取配置），退避 baseDelayMs*2^n + ≤30% 抖动
+  async function rpcCallWithRetry(name, args, signal, opts) {
+    opts = opts || {};
+    const maxRetries = opts.maxRetries || config.maxPageRetries || 4;
+    const baseDelayMs = opts.baseDelayMs || 1000;
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (signal && signal.aborted) throw (signal.reason || abortError());
+      try {
+        return await rpcCall(name, args, signal);
+      } catch (e) {
+        if (e && e.name === "AbortError") throw e;
+        lastErr = e;
+        if (!isRetryableError(e)) throw e;
+        if (attempt >= maxRetries) {
+          if (opts.onExhausted) opts.onExhausted(attempt, e);
+          throw e;
+        }
+        if (opts.onRetry) opts.onRetry(attempt + 1, e);
+        const exp = Math.pow(2, attempt);
+        const delay = Math.round(baseDelayMs * exp * (1 + Math.random() * 0.3));
+        await sleep(delay, signal);
+      }
+    }
+    throw lastErr;
+  }
+  // =====================================================================
   // 7. 任务控制器：同一时间只允许一个任务，支持停止
   // =====================================================================
   const task = {
@@ -855,6 +932,11 @@
   async function fetchAllUsage(ws, onProgress) {
     const PAGE_SIZE = 50;
     const maxPages = config.maxUsagePages || 500;
+    // 退级重试节奏：页间默认小间隔预防连接池耗尽；失败后进入退级模式放慢
+    const NORMAL_PAGE_DELAY_MS = 250;
+    const DEGRADED_PAGE_DELAY_MS = 1500;
+    const DEGRADED_RECOVER_PAGES = 5;
+    const maxPageRetries = config.maxPageRetries || 4;
     // 历史数据：用于“遇到重合即停止”的滚动刷新优化
     const prev = await loadUsage(ws);
     const prevComplete = !!(prev.meta && prev.meta.complete && prev.meta.count > 0);
@@ -866,6 +948,15 @@
     let stopped = false;
     let stoppedAtHistory = false;
     let reachedEnd = false;
+    let degraded = false;
+    let cleanStreak = 0;
+    const signal = task.controller ? task.controller.signal : undefined;
+    const enterDegraded = () => {
+      if (degraded) return;
+      degraded = true;
+      cleanStreak = 0;
+      warn("usage", t("log.degradedOn", { delay: DEGRADED_PAGE_DELAY_MS }), { delay: DEGRADED_PAGE_DELAY_MS });
+    };
     const addRow = (r) => {
       if (!r) return false;
       const fp = usageFingerprint(r);
@@ -876,9 +967,20 @@
     };
     for (; page < maxPages; page++) {
       if (task.stopRequested) { stopped = true; break; }
+      // 页间冷却：正常 250ms，退级模式 1500ms（第 0 页前不等待）
+      if (page > 0) await sleep(degraded ? DEGRADED_PAGE_DELAY_MS : NORMAL_PAGE_DELAY_MS, signal);
       let rows;
       try {
-        rows = await rpcCall("usage.list", [ws, page], task.controller ? task.controller.signal : undefined);
+        rows = await rpcCallWithRetry("usage.list", [ws, page], signal, {
+          maxRetries: maxPageRetries,
+          onRetry: (retryIndex, err) => {
+            warn("usage", t("log.retryPage", { page: page, attempt: retryIndex, max: maxPageRetries, err: String(err && err.message || err).slice(0, 200) }), { page: page, attempt: retryIndex, max: maxPageRetries });
+            enterDegraded();
+          },
+          onExhausted: (totalAttempts, err) => {
+            warn("usage", t("log.retryExhausted", { page: page, max: maxPageRetries }), { page: page, totalAttempts: totalAttempts, err: String(err && err.message || err).slice(0, 300) });
+          },
+        });
       } catch (e) {
         if (e && e.name === "AbortError") { stopped = true; break; }
         throw e;
@@ -898,7 +1000,16 @@
         // 本页出现与历史重合的记录 => 更早的页大概率都已在历史中，直接拿历史数据相加
         if (prevFps.has(usageFingerprint(r))) hitHistory++;
       }
-      if (onProgress) onProgress({ page: page + 1, fetched: merged.length, added, hitHistory });
+      // 退级恢复：连续成功页足够后退出退级模式
+      if (degraded) {
+        cleanStreak++;
+        if (cleanStreak >= DEGRADED_RECOVER_PAGES) {
+          degraded = false;
+          cleanStreak = 0;
+          info("usage", t("log.degradedOff", { n: DEGRADED_RECOVER_PAGES }), { n: DEGRADED_RECOVER_PAGES });
+        }
+      }
+      if (onProgress) onProgress({ page: page + 1, fetched: merged.length, added, hitHistory, degraded });
       if (rows.length < PAGE_SIZE) { reachedEnd = true; page++; break; }
       // 仅当历史已完整时才“命中历史即停止”；历史不完整时继续翻到底，才能标记完整
       if (hitHistory > 0 && prevComplete) {
@@ -929,6 +1040,7 @@
       const result = await fetchAllUsage(ws, (p) => {
         let msg = t("status.fetchPage", { page: p.page, n: p.fetched }) + (p.added ? t("status.fetchAdded", { n: p.added }) : "");
         if (p.hitHistory) msg += t("status.hitHistory", { n: p.hitHistory });
+        if (p.degraded) msg += t("status.degraded");
         setStatus(msg);
       });
       if (result.stopped) {
@@ -1152,6 +1264,10 @@
 #ocgo-btns button.ocgo-primary,#ocgo-analyze-btns button.ocgo-primary{background:#e8ecf1;border-color:#e8ecf1;color:#0b0d11;font-weight:600;}
 #ocgo-btns button.ocgo-primary:hover,#ocgo-analyze-btns button.ocgo-primary:hover{background:#fff;border-color:#fff;color:#0b0d11;}
 #ocgo-btns button.ocgo-stop{background:#e0a93c;border-color:#e0a93c;color:#0b0d11;display:none;}
+#ocgo-clear-confirm{display:none;align-items:center;gap:6px;font-size:12px;color:#e0a93c;}
+#ocgo-clear-confirm.ocgo-show{display:inline-flex;}
+#ocgo-clear-confirm .ocgo-clear-yes{background:#e0a93c;border-color:#e0a93c;color:#0b0d11;font-weight:600;}
+#ocgo-clear-confirm .ocgo-clear-yes:hover{background:#fff;border-color:#fff;color:#0b0d11;}
 #ocgo-status{color:#8d97a4;min-height:16px;}
 #ocgo-history-state{color:#6f7885;font-size:11px;}
 #ocgo-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
@@ -1543,7 +1659,11 @@
     const btnFetchAllUsage = el("button", { class: "ocgo-primary" }, t("usage.fetchAll"));
     const btnClearCache = el("button", {}, t("usage.clearHistory"));
     const btnStop = el("button", { class: "ocgo-stop", id: "ocgo-btn-stop" }, t("usage.stop"));
-    btns.append(btnFetchAllUsage, btnClearCache, btnStop);
+    const btnClearConfirmYes = el("button", { class: "ocgo-clear-yes" }, t("usage.clearConfirmYes"));
+    const btnClearConfirmNo = el("button", {}, t("usage.clearConfirmNo"));
+    const clearConfirm = el("span", { id: "ocgo-clear-confirm" });
+    clearConfirm.append(el("span", {}, t("usage.clearConfirm")), btnClearConfirmYes, btnClearConfirmNo);
+    btns.append(btnFetchAllUsage, btnClearCache, btnStop, clearConfirm);
     const status = el("div", { id: "ocgo-status" }, t("app.ready"));
     const cacheState = el("div", { id: "ocgo-history-state" });
     // 分析区直接并入数据页
@@ -1607,7 +1727,7 @@
     document.body.append(fab, panel);
     initResize(panel);
 
-    ui = { fab, panel, ws, status, cacheState, analysis, logList, logStats, btnStop,
+    ui = { fab, panel, ws, status, cacheState, analysis, logList, logStats, btnStop, clearConfirm,
       customFrom, customTo, rangeSel, dataTab, historyTab, historyRange, historyFrom, historyTo, historyStatus, historyTable, logTab, tabData, tabHistory, tabLog, langSel };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
     btnClose.addEventListener("click", () => panel.classList.add("ocgo-hidden"));
     langSel.addEventListener("change", () => setLang(langSel.value));
@@ -1627,7 +1747,14 @@
 
     btnRefreshWs.addEventListener("click", refreshWorkspaces);
     btnFetchAllUsage.addEventListener("click", () => runTask(t("task.fetchAll"), () => fetchAllUsageWithProgress(currentWorkspace())));
-    btnClearCache.addEventListener("click", async () => { await clearCache(); setStatus(t("status.historyCleared")); await renderCacheState(); });
+    btnClearCache.addEventListener("click", () => clearConfirm.classList.add("ocgo-show"));
+    btnClearConfirmYes.addEventListener("click", async () => {
+      clearConfirm.classList.remove("ocgo-show");
+      await clearCache();
+      setStatus(t("status.historyCleared"));
+      await renderCacheState();
+    });
+    btnClearConfirmNo.addEventListener("click", () => clearConfirm.classList.remove("ocgo-show"));
 
     btnAnalyze.addEventListener("click", () => runTask(t("task.analyze"), () => runAnalysis(false)));
     btnRefreshUsage.addEventListener("click", () => runTask(t("task.analyzeRefresh"), () => runAnalysis(true)));
@@ -1657,6 +1784,7 @@
     const btnMap = { data: ui.tabData, history: ui.tabHistory, log: ui.tabLog };
     for (const k in map) map[k].classList.toggle("ocgo-active", k === name);
     for (const k in btnMap) btnMap[k].classList.toggle("ocgo-active", k === name);
+    if (ui.clearConfirm) ui.clearConfirm.classList.remove("ocgo-show");
     if (name === "history") renderHistory();
   }
 
@@ -1737,7 +1865,7 @@
     const start = () => {
       injectStyle();
       buildUI();
-      info("boot", t("log.boot"), { version: "0.9.7", url: location.href });
+      info("boot", t("log.boot"), { version: "0.10.0", url: location.href });
       if (location.pathname.includes("/workspace/")) {
         refreshWorkspaces().catch(() => {});
       } else {
@@ -1764,10 +1892,11 @@
 
   // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
   window.__ocgo = {
-    version: "0.9.7",
+    version: "0.10.0",
     cacheUsage,
     loadUsage,
     assessUsageCache,
     clearCache,
+    isRetryableError,
   };
 })();

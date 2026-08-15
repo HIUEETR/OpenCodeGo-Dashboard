@@ -1,4 +1,4 @@
-"""End-to-end tests for userscript v0.9.7 (offline via route interception + usage view)."""
+"""End-to-end tests for userscript v0.10.0 (offline via route interception + usage view)."""
 import json
 import time as _time
 from pathlib import Path
@@ -6,6 +6,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 USER_JS = Path(__file__).resolve().parent / "opencodego-dashboard.user.js"
+if not USER_JS.exists():
+    USER_JS = Path(__file__).resolve().parent.parent / "opencodego-dashboard.user.js"
 WS = "wrk_TEST"
 USAGE_ID = "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c"
 WORKSPACES_ID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
@@ -51,6 +53,20 @@ def seroval_array(values):
     return (";0x%08x;" % len(b)).encode("utf-8") + b
 
 
+POOL_BODY = json.dumps({"message": "target: opencode.-.primary: vttablet: rpc error: code = ResourceExhausted desc = transaction pool connection limit exceeded (CallerID: l33kfo3ift2ikdn2b8dk)", "code": "UNKNOWN"})
+
+
+def make_page_rows(n, count=50):
+    return [
+        {"id": "usg_p%d_%02d" % (n, i),
+         "timeCreated": "2026-08-12T%02d:%02d:00.000Z" % ((n + i) % 24, i % 60),
+         "model": "deepseek-v4-flash", "inputTokens": 1000 + n * 100 + i, "outputTokens": 500 + i,
+         "reasoningTokens": 100 + i, "cacheReadTokens": 9000 + i, "cacheWrite5mTokens": None,
+         "cacheWrite1hTokens": None, "cost": 100000 + i}
+        for i in range(count)
+    ]
+
+
 def goto_retry(page, url):
     for attempt in range(4):
         try:
@@ -63,7 +79,14 @@ def goto_retry(page, url):
 
 def main():
     usage_requests = []
+    usage_counts = {}
     SLOW = [False]
+    FAIL = {"fail_once": {}, "always_fail": set(), "http_fail": {}, "full_until": 1}
+
+    def reset_fail():
+        FAIL.update({"fail_once": {}, "always_fail": set(), "http_fail": {}, "full_until": 1})
+        usage_counts.clear()
+        usage_requests.clear()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -89,10 +112,24 @@ def main():
                 page_num = body["t"]["a"][1]["s"]
             except Exception:
                 page_num = -1
+            usage_counts[page_num] = usage_counts.get(page_num, 0) + 1
             if SLOW[0]:
                 _time.sleep(2.5)
+            if page_num in FAIL["always_fail"]:
+                route.fulfill(status=400, content_type="application/json", body=POOL_BODY)
+                return
+            if page_num in FAIL["fail_once"] and FAIL["fail_once"][page_num] > 0:
+                FAIL["fail_once"][page_num] -= 1
+                route.fulfill(status=400, content_type="application/json", body=POOL_BODY)
+                return
+            if page_num in FAIL["http_fail"]:
+                status, body = FAIL["http_fail"][page_num]
+                route.fulfill(status=status, content_type="application/json", body=body)
+                return
             if page_num == 0:
                 data = seroval_response(PAGE0_NEW + [REC["B"], REC["A"]])
+            elif page_num < FAIL["full_until"]:
+                data = seroval_response(make_page_rows(page_num, 50))
             else:
                 data = seroval_response([REC["B"], REC["A"]])
             route.fulfill(status=200, content_type="text/javascript", body=data)
@@ -187,6 +224,97 @@ def main():
         assert not page.locator("#ocgo-btn-stop").is_visible()
         assert "不完整" not in page.locator("#ocgo-history-state").text_content(), page.locator("#ocgo-history-state").text_content()
         print("B OK: full fetch from incomplete history -> 2 requests, 50 merged, complete=True, no false warning")
+
+        # ---- v0.10.0: degraded retry ----
+        # C: transient pool error on page 1 -> retried once, fetch completes
+        reset_fail()
+        FAIL["fail_once"] = {1: 1}
+        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
+        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=40000)
+        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
+        assert usage_counts.get(1, 0) == 2, usage_counts  # page 1 failed once, then retried
+        assert u["meta"]["complete"] is True, u
+        log_text = page.locator("#ocgo-log-list").text_content()
+        assert "重试" in log_text, log_text[:500]
+        print("C OK: transient pool error retried once, fetch complete, page1 x2")
+
+        # D: failure enters degraded mode, 5 clean pages exit it
+        reset_fail()
+        FAIL["fail_once"] = {0: 1}
+        FAIL["full_until"] = 6
+        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
+        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=60000)
+        log_text = page.locator("#ocgo-log-list").text_content()
+        assert "退级模式" in log_text, log_text[:500]
+        assert "退出退级模式" in log_text, log_text[:500]
+        assert usage_counts.get(0, 0) == 2, usage_counts  # page 0 failed once, then retried
+        print("D OK: degraded mode entered after failure and exited after 5 clean pages")
+
+        # E: persistent pool error -> retries exhausted -> fetch aborts, partial history kept incomplete
+        reset_fail()
+        FAIL["always_fail"] = {2}
+        FAIL["full_until"] = 2
+        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
+        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('失败')", timeout=60000)
+        assert usage_counts.get(2, 0) == 5, usage_counts  # 1 initial + 4 retries
+        log_text = page.locator("#ocgo-log-list").text_content()
+        assert "中止拉取" in log_text, log_text[:500]
+        page.wait_for_function(
+            """async (ws) => { const x = await window.__ocgo.loadUsage(ws); return x.records.length >= 100 && x.meta.complete === false; }""",
+            arg=WS, timeout=10000)
+        print("E OK: exhausted retries abort fetch, partial history kept incomplete")
+
+        # F: non-retryable error -> no retry; isRetryableError classification
+        reset_fail()
+        FAIL["http_fail"] = {1: (403, '{"message":"forbidden"}')}
+        FAIL["full_until"] = 1
+        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
+        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('失败')", timeout=30000)
+        assert usage_counts.get(1, 0) == 1, usage_counts  # non-retryable 403 -> single attempt
+        retryable = page.evaluate("""() => ({
+          pool: window.__ocgo.isRetryableError(new Error('HTTP 400: usage.list -> transaction pool connection limit exceeded')),
+          http500: window.__ocgo.isRetryableError(new Error('HTTP 500: usage.list -> boom')),
+          http403: window.__ocgo.isRetryableError(new Error('HTTP 403: usage.list -> nope')),
+          decode: window.__ocgo.isRetryableError(new Error('decode failed')),
+        })""")
+        assert retryable["pool"] and retryable["http500"], retryable
+        assert not retryable["http403"] and not retryable["decode"], retryable
+        print("F OK: non-retryable 403 fails immediately; isRetryableError classification correct")
+
+        # G: clear history requires inline confirmation
+        page.evaluate(
+            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
+            {"ws": WS, "a": REC["A"], "b": REC["B"]},
+        )
+        confirm_bar = page.locator("#ocgo-clear-confirm")
+        assert not confirm_bar.is_visible(), "confirm bar should be hidden by default"
+        page.locator("#ocgo-btns button", has_text="清空历史").click()
+        page.wait_for_timeout(200)
+        assert confirm_bar.is_visible(), "confirm bar should appear after clicking 清空历史"
+        bar_text = confirm_bar.text_content()
+        assert "确认清空" in bar_text and "取消" in bar_text, bar_text
+        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
+        assert u["count"] == 2, u  # not cleared yet
+        # cancel keeps history
+        page.locator("#ocgo-clear-confirm button", has_text="取消").click()
+        page.wait_for_timeout(200)
+        assert not confirm_bar.is_visible(), "confirm bar should hide after cancel"
+        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
+        assert u["count"] == 2, u  # history untouched
+        # confirm clears history
+        page.locator("#ocgo-btns button", has_text="清空历史").click()
+        page.wait_for_timeout(200)
+        page.locator("#ocgo-clear-confirm button", has_text="确认清空").click()
+        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('历史已清空')", timeout=10000)
+        page.wait_for_timeout(200)
+        assert not confirm_bar.is_visible(), "confirm bar should hide after clearing"
+        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
+        assert u["count"] == 0, u
+        print("G OK: inline confirmation required for clear history (cancel keeps, confirm clears)")
 
         # History tab: seed cache (50 rows from scenario A) then render usage history table
         page.evaluate(
