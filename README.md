@@ -2,7 +2,7 @@
   <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard Usage Assistant Banner" />
 </p>
 
-# OpenCodeGo Usage Assistant (Userscript) v0.9.9
+# OpenCodeGo Usage Assistant (Userscript) v0.10.0
 
 **[中文](README.zh-CN.md)** | English
 
@@ -12,6 +12,7 @@ Fully fetch and persist your usage history on the `https://opencode.ai` dashboar
 - Content fingerprint dedup: identical `request time + input/output/reasoning/cache reads (+cache writes/model/cost)` => same record.
 - Persistent history (IndexedDB); when history is complete, full fetch **stops paging as soon as history is hit**; when incomplete, it pages to the end and marks itself complete.
 - Full fetch can be stopped, is mutually exclusive, and prevents duplicate pages; logs are persisted; the panel is draggable/resizable and remembers its size; **Chinese/English UI**.
+- Full fetch has degraded retry: a small delay between pages prevents pool/rate-limit errors; failures retry with backoff and slow the pace, recovering after consecutive successes.
 
 <p align="center">
   <img src="image/README/1786522202431.png" width="49%" alt="Screenshot 1" />
@@ -46,7 +47,7 @@ The script will **auto-update** when new versions are released.
 ## Usage (Data / Usage History / Logs)
 
 - **Data page (with analytics)**:
-  - Refresh workspace / **Fetch full usage** (stops early when complete history is hit) / Clear history;
+  - Refresh workspace / **Fetch full usage** (stops early when complete history is hit) / Clear history (with confirmation);
   - Time range (Today / 1d / 7d / 30d / All / Custom) → **Run analysis** or **Fetch latest & analyze**;
   - Metric cards (requests / input / output / reasoning / cache read / cache write / cost / cache hit rate), per-model breakdown (including per-model cache hit rate), daily details, and analysis report export.
 - **Usage History page**: tabular view of **recent API usage and costs** — column order: request time, model, **input, reasoning, cache read, output, cost ($)**;
