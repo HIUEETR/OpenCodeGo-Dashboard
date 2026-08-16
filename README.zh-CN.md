@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
+  <img src="image\README\OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
 </p>
 
 # OpenCodeGo 用量助手（油猴脚本）v0.10.0
