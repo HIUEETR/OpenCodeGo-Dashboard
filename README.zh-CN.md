@@ -6,6 +6,9 @@
 
 中文 | **[English](README.md)**
 
+> [!WARNING]
+> **本项目已废弃，不再需要。** OpenCode 官方已在 [OpenCode 控制台](https://opencode.ai/console) 原生提供用量统计与使用历史，本油猴脚本不再维护。仓库仅作留存参考，不再发布更新。
+
 在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
 
 - 页面一致：`POST /_server`，参数走 seroval JSON body（`X-Server-Id` / `X-Server-Instance` 头）。

@@ -6,6 +6,9 @@
 
 **[中文](README.zh-CN.md)** | English
 
+> [!WARNING]
+> **This project is deprecated and no longer needed.** OpenCode now officially provides usage statistics and usage history in the [OpenCode Console](https://opencode.ai/console), so this userscript is no longer maintained. The repository is kept for reference only and will receive no further updates.
+
 Fully fetch and persist your usage history on the `https://opencode.ai` dashboard, with **usage analytics** (Today / 1d / 7d / 30d / All / Custom — input/output, cache hit rate, cost) and **usage history**.
 
 - Same page contract: `POST /_server`, params sent as a seroval JSON body (with `X-Server-Id` / `X-Server-Instance` headers).
