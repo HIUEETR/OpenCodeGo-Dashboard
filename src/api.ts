@@ -1,5 +1,8 @@
 import type {
   CapturePage,
+  GoMeterWindow,
+  GoPlan,
+  GoQuotaStatus,
   RequestLogPage,
   RequestLogQuery,
   UsagePrincipal,
@@ -136,6 +139,64 @@ export async function listWorkspaces(signal?: AbortSignal): Promise<Workspace[]>
       avatarUrl: typeof item.avatarUrl === 'string' ? item.avatarUrl : null,
     }))
     .filter((item) => item.id.startsWith('wrk_'));
+}
+
+
+function optionalEpoch(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function optionalAmount(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  }
+  return undefined;
+}
+
+function meterWindow(value: unknown): GoMeterWindow {
+  if (!value || typeof value !== 'object') return {};
+  const meter = value as Record<string, unknown>;
+  return {
+    ...(optionalEpoch(meter.startsAt) === undefined ? {} : { startsAt: optionalEpoch(meter.startsAt) }),
+    ...(optionalEpoch(meter.resetsAt) === undefined ? {} : { resetsAt: optionalEpoch(meter.resetsAt) }),
+    ...(optionalAmount(meter.limitMicroCents) === undefined ? {} : { limitMicroCents: optionalAmount(meter.limitMicroCents) }),
+    ...(optionalAmount(meter.usedMicroCents) === undefined ? {} : { usedMicroCents: optionalAmount(meter.usedMicroCents) }),
+  };
+}
+
+export async function getGoQuotaStatus(workspaceID: string, signal?: AbortSignal): Promise<GoQuotaStatus> {
+  const data = await requestJson<unknown>('/api/go/status', { workspaceID, signal });
+  if (!data || typeof data !== 'object') {
+    throw new ApiError('contract', 'Go status response was not an object.');
+  }
+  const record = data as Record<string, unknown>;
+  const product = record.product === 'go' || record.product === 'go-plus' ? record.product as GoPlan : null;
+  const access = record.access && typeof record.access === 'object'
+    ? record.access as Record<string, unknown>
+    : null;
+  const meters = access?.meters && typeof access.meters === 'object'
+    ? access.meters as Record<string, unknown>
+    : null;
+  return {
+    active: Boolean(access && product),
+    product,
+    ...(optionalEpoch(access?.startsAt) === undefined ? {} : { accessStartsAt: optionalEpoch(access?.startsAt) }),
+    ...(optionalEpoch(access?.endsAt) === undefined ? {} : { accessEndsAt: optionalEpoch(access?.endsAt) }),
+    cancelAtPeriodEnd: record.cancelAtPeriodEnd === true,
+    fiveHour: meterWindow(meters?.fiveHour),
+    week: meterWindow(meters?.week),
+    month: meterWindow(meters?.month),
+    fetchedAt: Date.now(),
+  };
 }
 
 export function validateRequestLogPage(data: unknown): RequestLogPage {

@@ -59,6 +59,7 @@ button, select, input { font: inherit; }
 .ocgo-icon-btn:hover, .ocgo-btn:hover, .ocgo-tab:hover { background: rgba(255,255,255,.09); color: #fff; }
 .ocgo-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: #161616; }
 .ocgo-toolbar label { display: flex; align-items: center; gap: 4px; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .35px; }
+.ocgo-toolbar label[hidden] { display: none !important; }
 select, input[type="datetime-local"] {
   background: #080808; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 7px; outline: none; max-width: 190px;
 }
@@ -233,4 +234,40 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
   .ocgo-status-dot.busy { animation: none; }
   .ocgo-fab { transition: none; }
 }
+.ocgo-tab-badge { margin-left: 4px; padding: 0 4px; border: 1px solid rgba(118,152,253,.38); border-radius: 999px; color: var(--accent); font-size: 8px; line-height: 1.5; vertical-align: 1px; }
+.ocgo-experimental { display: flex; flex-direction: column; gap: 6px; }
+.ocgo-experimental-row { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: 11px; }
+.ocgo-experimental-row input { accent-color: var(--accent); }
+.ocgo-forecast-view { display: flex; flex-direction: column; gap: 10px; }
+.ocgo-forecast-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ocgo-forecast-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.ocgo-forecast-source, .ocgo-forecast-confidence { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.025); font-size: 9px; }
+.ocgo-forecast-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ocgo-forecast-card { min-height: 116px; }
+.ocgo-forecast-card .ocgo-card-value { font-size: 18px; }
+.ocgo-card-detail { margin-top: 5px; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
+.ocgo-danger-text { color: var(--danger) !important; }
+.ocgo-forecast-chart-section .ocgo-section-head { align-items: center; }
+.ocgo-forecast-window-controls { display: flex; gap: 4px; flex-wrap: wrap; }
+.ocgo-forecast-window-btn.ocgo-active { border-color: rgba(118,152,253,.72); color: var(--accent); background: rgba(118,152,253,.10); }
+.ocgo-forecast-chart { width: 100%; height: 250px; display: block; }
+.ocgo-forecast-gridline { stroke: rgba(255,255,255,.07); stroke-width: 1; }
+.ocgo-forecast-axis-label { fill: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-forecast-actual { fill: none; stroke: var(--accent); stroke-width: 2; }
+.ocgo-forecast-p50 { fill: none; stroke: var(--violet); stroke-width: 2; stroke-dasharray: 5 4; }
+.ocgo-forecast-band { fill: rgba(158,153,247,.13); stroke: none; }
+.ocgo-forecast-now { stroke: rgba(250,250,250,.45); stroke-width: 1; stroke-dasharray: 3 4; }
+.ocgo-forecast-boundary { stroke: rgba(242,207,118,.28); stroke-width: 1; stroke-dasharray: 2 5; }
+.ocgo-forecast-table-wrap { max-height: 300px; }
+.ocgo-forecast-row { cursor: pointer; }
+.ocgo-forecast-row.ocgo-active td { background: rgba(118,152,253,.075); }
+.ocgo-forecast-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ocgo-forecast-model { color: var(--fg); font-weight: 600; }
+.ocgo-forecast-table td:nth-child(2), .ocgo-forecast-table td:nth-child(3), .ocgo-forecast-table td:nth-child(4), .ocgo-forecast-table td:nth-child(5), .ocgo-forecast-table td:nth-child(6) { font-variant-numeric: tabular-nums; }
+.ocgo-forecast-state { border: 1px dashed var(--line); border-radius: 10px; padding: 26px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); }
+.ocgo-forecast-footer { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ocgo-forecast-footer .ocgo-warning { flex-basis: 100%; }
+@media (max-width: 980px) { .ocgo-forecast-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .ocgo-forecast-cards { grid-template-columns: 1fr; } .ocgo-forecast-chart { height: 210px; } }
+
 `;

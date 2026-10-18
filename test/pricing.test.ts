@@ -4,6 +4,8 @@ import {
   estimateModelCostBreakdown,
   isGoPricingCacheFresh,
   pricingPeriodForTimestamp,
+  quotaLimitsForModel,
+  quotaUsdForRecord,
   selectPricingTier,
 } from '../src/pricing';
 import type { GoPricingTier, ModelSummary, RequestRecord } from '../src/types';
@@ -117,12 +119,35 @@ describe('Go pricing', () => {
     expect(breakdown?.total).toBe(1);
   });
 
+  it('reads monthly quotas per plan and computes quota usage without cost normalization', () => {
+    const pricing = {
+      fetchedAt: 1,
+      source: 'https://opencode.ai/v2/docs/console/go/',
+      schemaVersion: 2,
+      tiers: [offPeakTier, peakTier],
+      quotaLimits: {
+        go: { 'deepseek-v4.1-flash': 80, 'gpt-5.6-luna': 15 },
+        'go-plus': { 'deepseek-v4.1-flash': 160, 'gpt-5.6-luna': 60 },
+      },
+    };
+    expect(quotaLimitsForModel(pricing, 'go', 'deepseek-v4.1-flash')).toBe(80);
+    expect(quotaLimitsForModel(pricing, 'go-plus', 'opencode-go/deepseek-v4.1-flash')).toBe(160);
+    expect(quotaLimitsForModel(pricing, 'go', 'missing')).toBeUndefined();
+    expect(quotaUsdForRecord(record(), peakTier)).toBeCloseTo(0.0003 + 0.00012 + 0.000012);
+    expect(quotaUsdForRecord(record(), undefined)).toBeNull();
+  });
+
+  it('matches model IDs with the opencode-go prefix', () => {
+    expect(selectPricingTier([peakTier], record({ model: 'opencode-go/deepseek-v4.1-flash' }))?.modelID).toBe('deepseek-v4.1-flash');
+  });
+
   it('uses a three-day pricing cache window', () => {
     const cache = {
       fetchedAt: 1_000,
       source: 'https://opencode.ai/v2/docs/console/go/',
-      schemaVersion: 1,
+      schemaVersion: 2,
       tiers: [peakTier],
+      quotaLimits: { go: { 'deepseek-v4.1-flash': 80 }, 'go-plus': { 'deepseek-v4.1-flash': 160 } },
     };
     expect(isGoPricingCacheFresh(cache, 1_000 + GO_PRICING_TTL_MS - 1)).toBe(true);
     expect(isGoPricingCacheFresh(cache, 1_000 + GO_PRICING_TTL_MS)).toBe(false);

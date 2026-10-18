@@ -24,16 +24,29 @@ HTML_DOCS = """
 <!doctype html>
 <html lang="en">
   <body>
-    <table>
-      <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
-      <tbody>
-        <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$80</strong></td></tr>
-      </tbody>
-    </table>
+    <div data-plan-panel="go">
+      <table>
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
+        <tbody>
+          <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$80</strong></td></tr>
+          <tr><td>GPT 5.6 Luna (≤ 272K tokens)</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td><td><strong>$15</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div data-plan-panel="go-plus">
+      <table>
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
+        <tbody>
+          <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$160</strong></td></tr>
+          <tr><td>GPT 5.6 Luna (≤ 272K tokens)</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td><td><strong>$60</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
     <table>
       <thead><tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr></thead>
       <tbody>
         <tr><td>DeepSeek V4.1 Flash</td><td>deepseek-v4.1-flash</td><td>https://opencode.ai/inference/go/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr>
+        <tr><td>GPT 5.6 Luna</td><td>gpt-5.6-luna</td><td>https://opencode.ai/inference/go/openai/v1/responses</td><td>@ai-sdk/openai</td></tr>
       </tbody>
     </table>
   </body>
@@ -86,12 +99,55 @@ def api_record(
     }
 
 
-def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, zero_token_model=None):
+def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, status_seen=None, status_unauthorized=False, zero_token_model=None):
     limited = {"done": False}
 
     def handler(route):
         request = route.request
         url = request.url
+        if url.endswith("/console/api/go/status"):
+            if status_seen is not None:
+                status_seen.append({"url": url, "headers": request.headers})
+            if status_unauthorized:
+                route.fulfill(
+                    status=401,
+                    content_type="application/json",
+                    body=json.dumps({"message": "unauthorized"}),
+                )
+                return
+            now = int(time.time() * 1000)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "product": "go",
+                    "cancelAtPeriodEnd": False,
+                    "access": {
+                        "startsAt": now - 10 * 86_400_000,
+                        "endsAt": now + 20 * 86_400_000,
+                        "meters": {
+                            "fiveHour": {
+                                "startsAt": now - 2 * 3_600_000,
+                                "resetsAt": now + 3 * 3_600_000,
+                                "limitMicroCents": 1_200_000_000,
+                                "usedMicroCents": 300_000_000,
+                            },
+                            "week": {
+                                "startsAt": now - 2 * 86_400_000,
+                                "resetsAt": now + 5 * 86_400_000,
+                                "limitMicroCents": 3_000_000_000,
+                                "usedMicroCents": 600_000_000,
+                            },
+                            "month": {
+                                "resetsAt": now + 20 * 86_400_000,
+                                "limitMicroCents": 6_000_000_000,
+                                "usedMicroCents": 1_000_000_000,
+                            },
+                        },
+                    },
+                }),
+            )
+            return
         if url.endswith("/console/api/user/workspaces"):
             route.fulfill(
                 status=200,
@@ -412,7 +468,7 @@ def test_main_flow():
         assert "缓存模型价格" in pricing_text
         assert "DeepSeek V4.1 Flash" in pricing_text
         assert "$0.30" in pricing_text
-        assert pricing_section.locator('tbody tr').count() == 1
+        assert pricing_section.locator('tbody tr').count() == 2
         pricing_box = pricing_section.bounding_box()
         logs_box = page.locator('.ocgo-log-list').bounding_box()
         assert pricing_box is not None and logs_box is not None
@@ -629,11 +685,88 @@ def test_model_tables_hide_zero_token_models():
         browser.close()
 
 
+def test_forecast_beta_toggle():
+    requests_seen = []
+    status_seen = []
+    pricing_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, pricing_seen=pricing_seen, status_seen=status_seen)
+        open_fixture(context, page)
+
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        forecast_tab = page.locator('[data-tab="forecast"]')
+        assert forecast_tab.is_hidden()
+        assert not status_seen, status_seen
+
+        page.locator('[data-tab="data"]').click()
+        toggle = page.locator('.ocgo-experimental-row input')
+        toggle.check()
+        assert forecast_tab.is_visible()
+        assert "Beta" in forecast_tab.inner_text()
+        assert not status_seen, status_seen
+
+        forecast_tab.click()
+        cards = page.locator('[data-view="forecast"] .ocgo-forecast-card')
+        cards.first.wait_for(timeout=15000)
+        assert cards.count() == 4
+        assert status_seen and "x-org-id" in status_seen[0]["headers"]
+        assert status_seen[0]["headers"]["x-org-id"] == WORKSPACE
+        rows = page.locator('[data-view="forecast"] .ocgo-forecast-table tbody tr')
+        assert rows.count() == 1, rows.all_inner_texts()
+        deepseek = page.locator('[data-view="forecast"] tr[data-model="deepseek-v4.1-flash"]')
+        assert "$80.00" in deepseek.locator("td").nth(1).inner_text()
+        assert "$16.00" in (deepseek.locator("td").nth(2).get_attribute("title") or "")
+        assert "$40.00" in (deepseek.locator("td").nth(3).get_attribute("title") or "")
+        assert page.locator('[data-view="forecast"] svg.ocgo-forecast-chart').count() == 1
+        deepseek.click()
+        page.wait_for_timeout(100)
+        assert page.locator('[data-view="forecast"] .ocgo-forecast-row.ocgo-active').get_attribute("data-model") == "deepseek-v4.1-flash"
+
+        page.locator('[data-tab="data"]').click()
+        page.locator('.ocgo-experimental-row input').uncheck()
+        assert forecast_tab.is_hidden()
+        assert page.locator('[data-view="data"]').is_visible()
+        assert not errors, errors
+        browser.close()
+
+
+def test_forecast_status_fallback():
+    requests_seen = []
+    status_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, status_seen=status_seen, status_unauthorized=True)
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator('[data-tab="data"]').click()
+        page.locator('.ocgo-experimental-row input').check()
+        page.locator('[data-tab="forecast"]').click()
+        page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
+        assert page.locator('[data-view="forecast"] .ocgo-forecast-card').count() == 4
+        assert status_seen
+        assert page.locator('[data-view="forecast"] .ocgo-warning').filter(has_text="Go 状态请求失败").count() == 1
+        assert not errors, errors
+        browser.close()
+
+
 if __name__ == "__main__":
     test_main_flow()
     test_english_browser_locale()
     test_overview_cache_write_card()
     test_model_tables_hide_zero_token_models()
+    test_forecast_beta_toggle()
+    test_forecast_status_fallback()
     test_fab_and_resize_interactions()
     test_workspace_route_change()
     test_rate_limit_retry()

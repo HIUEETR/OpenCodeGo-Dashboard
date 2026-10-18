@@ -19,4 +19,5 @@ export const FILTERS_STORAGE_KEY = 'filters';
 export const RANGE_STORAGE_KEY = 'range';
 export const LANGUAGE_STORAGE_KEY = 'language';
 export const PANEL_STATE_KEY = 'panelState';
+export const EXPERIMENTAL_FORECAST_KEY = 'experimentalForecast';
 

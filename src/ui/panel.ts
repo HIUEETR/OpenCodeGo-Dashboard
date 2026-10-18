@@ -1,4 +1,5 @@
 import {
+  EXPERIMENTAL_FORECAST_KEY,
   FILTERS_STORAGE_KEY,
   LANGUAGE_STORAGE_KEY,
   PANEL_STATE_KEY,
@@ -16,7 +17,7 @@ import {
   makeTimeRange,
   tokenRateForRange,
 } from '../analytics';
-import { ApiError, listUsagePrincipals, listWorkspaces } from '../api';
+import { ApiError, getGoQuotaStatus, listUsagePrincipals, listWorkspaces } from '../api';
 import {
   csvEscape,
   clamp,
@@ -46,12 +47,14 @@ import {
   storageEstimate,
 } from '../storage';
 import { estimateModelCostBreakdown, loadGoPricing } from '../pricing';
+import { buildQuotaForecast, type QuotaForecastResult } from '../forecast';
 import { syncWorkspace } from '../sync';
 import { APP_VERSION } from '../version';
 import type {
   AnalyticsFilters,
   AnalyticsResult,
   GoPricingCache,
+  GoQuotaStatus,
   Language,
   ModelSummary,
   RangePreset,
@@ -64,6 +67,7 @@ import type {
   Workspace,
 } from '../types';
 import { hideChartTooltip, renderCacheChart, renderLatencyChart, renderTokenMix, renderTpsChart, showDataTooltip } from './charts';
+import { ForecastPanel } from './forecastPanel';
 import { panelCss } from './styles';
 
 type ElementTag = keyof HTMLElementTagNameMap;
@@ -141,6 +145,7 @@ export class Panel {
   private statusText?: HTMLElement;
   private workspaceLabel?: HTMLElement;
   private rangeSelect?: HTMLSelectElement;
+  private rangeControl?: HTMLElement;
   private modelSelect?: HTMLSelectElement;
   private providerSelect?: HTMLSelectElement;
   private userSelect?: HTMLSelectElement;
@@ -166,6 +171,10 @@ export class Panel {
   private requestPager?: HTMLElement;
   private dataInfo?: HTMLElement;
   private dataActions?: HTMLElement;
+  private experimentalCheckbox?: HTMLInputElement;
+  private forecastTab?: HTMLButtonElement;
+  private forecastHost?: HTMLElement;
+  private forecastPanel?: ForecastPanel;
   private pricingPanel?: HTMLElement;
   private storageNote?: HTMLElement;
   private logList?: HTMLElement;
@@ -206,6 +215,19 @@ export class Panel {
   private pricing?: GoPricingCache;
   private pricingLoading = false;
   private pricingError = '';
+  private pricingPromise?: Promise<GoPricingCache | undefined>;
+  private experimentalForecast = false;
+  private forecastRecords?: RequestRecord[];
+  private forecastResult?: QuotaForecastResult;
+  private forecastStatus?: GoQuotaStatus;
+  private forecastStatusFetchedAt = 0;
+  private forecastStatusError = '';
+  private forecastLoading = false;
+  private forecastError = '';
+  private forecastLoadSeq = 0;
+  private forecastStale = true;
+  private forecastController?: AbortController;
+  private forecastViewReady = false;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -308,6 +330,7 @@ export class Panel {
 
     const toolbar = node('div', 'ocgo-toolbar');
     const rangeWrap = node('label');
+    this.rangeControl = rangeWrap;
     rangeWrap.append(this.textFor('range.label'));
     const rangeSelect = node('select');
     this.rangeSelect = rangeSelect;
@@ -399,10 +422,14 @@ export class Panel {
     });
 
     const tabs = node('nav', 'ocgo-tabs');
-    const tabKeys: TabKey[] = ['overview', 'charts', 'requests', 'data'];
+    const tabKeys: TabKey[] = ['overview', 'charts', 'requests', 'forecast', 'data'];
     for (const key of tabKeys) {
       const tab = button('', 'ocgo-tab');
-      this.rememberI18n(`tabs.${key}`, tab);
+      tab.appendChild(this.textFor(`tabs.${key}`));
+      if (key === 'forecast') {
+        tab.appendChild(node('span', 'ocgo-tab-badge', t(this.language, 'badge.beta')));
+        this.forecastTab = tab;
+      }
       tab.dataset.tab = key;
       tab.addEventListener('click', () => this.setTab(key));
       this.tabButtons.set(key, tab);
@@ -420,12 +447,14 @@ export class Panel {
     const overview = this.buildOverviewView();
     const charts = this.buildChartsView();
     const requests = this.buildRequestsView();
+    const forecast = this.buildForecastView();
     const data = this.buildDataView();
     this.views.set('overview', overview);
     this.views.set('charts', charts);
     this.views.set('requests', requests);
+    this.views.set('forecast', forecast);
     this.views.set('data', data);
-    body.append(overview, charts, requests, data);
+    body.append(overview, charts, requests, forecast, data);
 
     const directions = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as const;
     const handles = directions.map((direction) => {
@@ -532,6 +561,16 @@ export class Panel {
     return view;
   }
 
+  private buildForecastView(): HTMLElement {
+    const view = node('section', 'ocgo-view');
+    view.dataset.view = 'forecast';
+    const host = node('div', 'ocgo-forecast-view');
+    this.forecastHost = host;
+    this.forecastPanel = new ForecastPanel(host);
+    view.appendChild(host);
+    return view;
+  }
+
   private buildDataView(): HTMLElement {
     const view = node('section', 'ocgo-view');
     view.dataset.view = 'data';
@@ -547,6 +586,23 @@ export class Panel {
     this.dataActions = node('div', 'ocgo-actions');
     actionSection.append(actionHead, this.dataActions);
     grid.append(infoSection, actionSection);
+    const experimentalSection = node('section', 'ocgo-section');
+    const experimentalHead = node('div', 'ocgo-section-head');
+    experimentalHead.append(this.textFor('data.experimentalTitle'));
+    const experimental = node('div', 'ocgo-experimental');
+    const experimentalRow = node('label', 'ocgo-experimental-row');
+    const experimentalCheckbox = node('input');
+    experimentalCheckbox.type = 'checkbox';
+    experimentalCheckbox.checked = this.experimentalForecast;
+    this.experimentalCheckbox = experimentalCheckbox;
+    experimentalCheckbox.addEventListener('change', () => this.setExperimentalForecast(experimentalCheckbox.checked));
+    experimentalRow.append(experimentalCheckbox, this.textFor('data.experimentalForecast'));
+    experimental.append(
+      experimentalRow,
+      this.rememberI18n('data.experimentalForecastHint', node('div', 'ocgo-note')),
+      this.rememberI18n('data.experimentalForecastNote', node('div', 'ocgo-note')),
+    );
+    experimentalSection.append(experimentalHead, experimental);
     const pricingSection = node('section', 'ocgo-section ocgo-pricing-section');
     const pricingHead = node('div', 'ocgo-section-head');
     pricingHead.append(
@@ -560,7 +616,7 @@ export class Panel {
     logHead.append(this.textFor('data.diagnostics'));
     this.logList = node('div', 'ocgo-log-list');
     diagnostics.append(logHead, this.logList);
-    view.append(grid, pricingSection, diagnostics);
+    view.append(grid, experimentalSection, pricingSection, diagnostics);
     return view;
   }
 
@@ -809,6 +865,7 @@ export class Panel {
     if (open) {
       this.hasOpened = true;
       this.render();
+      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
       window.setTimeout(() => this.autoSyncIfStale(), 150);
     }
   }
@@ -831,8 +888,18 @@ export class Panel {
     this.toast?.classList.add('ocgo-hidden');
   }
 
-  private async ensurePricing(): Promise<void> {
-    if (this.pricingLoading) return;
+  private ensurePricing(): Promise<GoPricingCache | undefined> {
+    if (this.pricingPromise) return this.pricingPromise;
+    const task = this.loadPricing();
+    this.pricingPromise = task;
+    void task.finally(() => {
+      if (this.pricingPromise === task) this.pricingPromise = undefined;
+    });
+    return task;
+  }
+
+  private async loadPricing(): Promise<GoPricingCache | undefined> {
+    if (this.pricingLoading) return this.pricing;
     this.pricingLoading = true;
     this.renderPricing();
     const result = await loadGoPricing();
@@ -846,21 +913,188 @@ export class Panel {
     }
     this.renderPricing();
     if (result.error) this.logger.warn('log.pricingRefreshFailed', { error: result.error });
+    return this.pricing;
+  }
+
+  private setExperimentalForecast(enabled: boolean): void {
+    this.experimentalForecast = enabled;
+    saveJSON(EXPERIMENTAL_FORECAST_KEY, enabled);
+    if (!enabled) {
+      this.resetForecast();
+      if (this.activeTab === 'forecast') this.activeTab = 'data';
+      saveJSON(TAB_STORAGE_KEY, this.activeTab);
+    } else {
+      this.forecastStale = true;
+    }
+    this.renderChrome();
+    this.render();
+    if (enabled && this.activeTab === 'forecast') void this.loadForecast(false);
+  }
+
+  private resetForecast(): void {
+    this.forecastController?.abort();
+    this.forecastController = undefined;
+    this.forecastLoadSeq += 1;
+    this.forecastRecords = undefined;
+    this.forecastResult = undefined;
+    this.forecastStatus = undefined;
+    this.forecastStatusFetchedAt = 0;
+    this.forecastStatusError = '';
+    this.forecastLoading = false;
+    this.forecastError = '';
+    this.forecastStale = true;
+  }
+
+  private async loadForecastStatus(force: boolean): Promise<GoQuotaStatus | undefined> {
+    if (!force && this.forecastStatus && Date.now() - this.forecastStatusFetchedAt < 60_000) {
+      return this.forecastStatus;
+    }
+    const workspaceID = this.workspaceID;
+    if (!workspaceID) return undefined;
+    this.forecastController?.abort();
+    const controller = new AbortController();
+    this.forecastController = controller;
+    try {
+      const status = await getGoQuotaStatus(workspaceID, controller.signal);
+      if (this.workspaceID !== workspaceID || controller.signal.aborted) return undefined;
+      this.forecastStatus = status;
+      this.forecastStatusFetchedAt = Date.now();
+      this.forecastStatusError = '';
+      return status;
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return undefined;
+      this.forecastStatus = undefined;
+      this.forecastStatusFetchedAt = Date.now();
+      this.forecastStatusError = error instanceof Error ? error.message : String(error);
+      this.logger.warn('log.goStatusFailed', { error: this.forecastStatusError });
+      return undefined;
+    } finally {
+      if (this.forecastController === controller) this.forecastController = undefined;
+    }
+  }
+
+  private async loadForecast(force: boolean): Promise<void> {
+    if (!this.open || !this.experimentalForecast || !this.workspaceID) return;
+    if (this.forecastLoading) return;
+    if (!force && !this.forecastStale && this.forecastResult) {
+      this.renderForecast();
+      return;
+    }
+    const workspaceID = this.workspaceID;
+    const loadSeq = ++this.forecastLoadSeq;
+    this.forecastLoading = true;
+    this.forecastError = '';
+    this.renderForecast();
+    try {
+      const [pricing, records, status] = await Promise.all([
+        this.ensurePricing(),
+        getAllRecords(workspaceID),
+        this.loadForecastStatus(force),
+      ]);
+      if (loadSeq !== this.forecastLoadSeq || this.workspaceID !== workspaceID) return;
+      if (!pricing) {
+        throw new Error(this.pricingError || t(this.language, 'data.pricingEmpty'));
+      }
+      this.forecastRecords = records;
+      this.forecastResult = buildQuotaForecast({
+        records,
+        pricing,
+        filters: this.filters,
+        status,
+        syncState: this.syncState,
+        statusError: this.forecastStatusError,
+        now: Date.now(),
+      });
+      this.forecastStale = false;
+      this.logger.info('log.forecastUpdated', { n: this.forecastResult.models.length });
+    } catch (error) {
+      if (loadSeq === this.forecastLoadSeq) {
+        this.forecastError = error instanceof Error ? error.message : String(error);
+        this.logger.warn('log.forecastFailed', { error: this.forecastError });
+      }
+    } finally {
+      if (loadSeq === this.forecastLoadSeq) {
+        this.forecastLoading = false;
+        this.renderForecast();
+      }
+    }
+  }
+
+  private renderForecast(): void {
+    if (!this.open || !this.experimentalForecast || !this.forecastPanel) return;
+    if (!this.workspaceID) {
+      this.forecastPanel.renderEmpty(this.language, t(this.language, 'error.workspace'), t(this.language, 'forecast.emptyHint'));
+      return;
+    }
+    if (this.forecastLoading) {
+      this.forecastPanel.renderLoading(this.language);
+      return;
+    }
+    if (this.forecastError) {
+      this.forecastPanel.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
+      return;
+    }
+    if (!this.forecastRecords || !this.pricing) {
+      this.forecastPanel.renderEmpty(this.language);
+      return;
+    }
+    this.forecastResult = buildQuotaForecast({
+      records: this.forecastRecords,
+      pricing: this.pricing,
+      filters: this.filters,
+      status: this.forecastStatus,
+      syncState: this.syncState,
+      statusError: this.forecastStatusError,
+      now: Date.now(),
+    });
+    if (!this.forecastRecords.length) {
+      this.forecastPanel.renderEmpty(this.language);
+      return;
+    }
+    if (!this.forecastResult.models.length) {
+      this.forecastPanel.renderEmpty(this.language, t(this.language, 'forecast.noModels'), t(this.language, 'forecast.emptyHint'));
+      return;
+    }
+    this.forecastPanel.render(
+      this.forecastResult,
+      this.filters.model,
+      this.language,
+      (model) => {
+        this.filters.model = model;
+        this.requestPage = 1;
+        this.persistPreferences();
+        this.renderFilters();
+        this.render();
+      },
+      () => void this.loadForecast(true),
+    );
   }
 
   private setTab(tab: TabKey): void {
+    if (tab === 'forecast' && !this.experimentalForecast) tab = 'data';
     this.activeTab = tab;
     hideChartTooltip(this.chartTooltip);
     saveJSON(TAB_STORAGE_KEY, tab);
-    for (const [key, tabButton] of this.tabButtons) tabButton.classList.toggle('ocgo-active', key === tab);
+    for (const [key, tabButton] of this.tabButtons) {
+      tabButton.classList.toggle('ocgo-active', key === tab);
+      if (key === 'forecast') tabButton.hidden = !this.experimentalForecast;
+    }
     for (const [key, view] of this.views) view.classList.toggle('ocgo-active', key === tab);
+    if (this.rangeControl) this.rangeControl.hidden = tab === 'forecast';
+    this.customRange?.classList.toggle('ocgo-show', tab !== 'forecast' && this.rangePreset === 'custom');
     if (tab === 'data') this.renderData();
     if (tab === 'requests') this.renderRequests();
+    if (tab === 'forecast' && this.open) {
+      if (this.forecastStale || !this.forecastResult) void this.loadForecast(false);
+      else this.renderForecast();
+    }
   }
 
   private setLanguage(language: Language): void {
     this.language = language;
     saveJSON(LANGUAGE_STORAGE_KEY, language);
+    const badge = this.forecastTab?.querySelector('.ocgo-tab-badge');
+    if (badge) badge.textContent = t(language, 'badge.beta');
     hideChartTooltip(this.chartTooltip);
     this.renderChrome();
     this.render();
@@ -926,7 +1160,9 @@ export class Panel {
       this.syncButton.classList.toggle('ocgo-stop', this.busy);
       this.syncButton.disabled = !this.workspaceID;
     }
-    this.customRange?.classList.toggle('ocgo-show', this.rangePreset === 'custom');
+    this.customRange?.classList.toggle('ocgo-show', this.rangePreset === 'custom' && this.activeTab !== 'forecast');
+    if (this.experimentalCheckbox) this.experimentalCheckbox.checked = this.experimentalForecast;
+    if (this.forecastTab) this.forecastTab.hidden = !this.experimentalForecast;
     const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
     if (this.workspaceLabel) {
       this.workspaceLabel.textContent = workspace?.name || this.workspaceID || t(this.language, 'error.workspace');
@@ -988,6 +1224,7 @@ export class Panel {
     this.renderCharts();
     this.renderRequests();
     if (this.activeTab === 'data') this.renderData();
+    if (this.activeTab === 'forecast') this.renderForecast();
   }
 
   private renderStatus(): void {
@@ -1305,6 +1542,7 @@ export class Panel {
   }
   private renderData(): void {
     if (!this.dataInfo || !this.dataActions) return;
+    if (this.experimentalCheckbox) this.experimentalCheckbox.checked = this.experimentalForecast;
     this.dataInfo.replaceChildren();
     const state = this.syncState;
     const info = node('dl', 'ocgo-kv');
@@ -1488,6 +1726,7 @@ export class Panel {
       return;
     }
     this.workspaceID = workspaceID;
+    this.resetForecast();
     this.principals = [];
     this.errorMessage = workspaceID ? '' : t(this.language, 'error.workspace');
     this.requestPage = 1;
@@ -1512,6 +1751,7 @@ export class Panel {
         this.logger.warn('log.migrationSkipped', { error: error instanceof Error ? error.message : String(error) });
       }
       await this.reloadRecords();
+      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
       void this.refreshWorkspaces();
       void this.refreshPrincipals();
       if (this.open) window.setTimeout(() => this.autoSyncIfStale(), 200);
@@ -1623,6 +1863,8 @@ export class Panel {
         },
       });
       await this.reloadRecords();
+      this.forecastStale = true;
+      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
       this.logger.info(result.cacheHit ? 'log.syncCached' : 'log.syncComplete', {
         fetched: result.fetched,
         added: result.added,
@@ -1637,6 +1879,8 @@ export class Panel {
         this.logger.error('log.error', { error: error instanceof Error ? error.message : String(error) });
       }
       await this.reloadRecords();
+      this.forecastStale = true;
+      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
     } finally {
       this.busy = false;
       this.progress = undefined;
@@ -1671,8 +1915,12 @@ export class Panel {
   handleCaptured(workspaceID: string, count: number): void {
     this.logger.info('status.captured', { n: count });
     if (workspaceID !== this.workspaceID) return;
+    this.forecastStale = true;
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
-    this.refreshTimer = window.setTimeout(() => { void this.reloadRecords(); }, 300);
+    this.refreshTimer = window.setTimeout(() => {
+      void this.reloadRecords();
+      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+    }, 300);
   }
 
   private setError(error: unknown): void {
@@ -1776,6 +2024,7 @@ export class Panel {
     }));
     this.records = [];
     this.totalRecordCount = 0;
+    this.resetForecast();
     this.syncState = await getSyncState(this.workspaceID);
     this.requestPage = 1;
     this.logger.warn('log.historyCleared');
