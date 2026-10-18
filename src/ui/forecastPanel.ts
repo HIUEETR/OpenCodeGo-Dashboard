@@ -11,6 +11,9 @@ import { t } from '../i18n';
 import type { Language } from '../types';
 
 const WINDOW_KEYS: ForecastWindowKey[] = ['fiveHour', 'next24h', 'week', 'month'];
+const FORECAST_CHART_WIDTH = 760;
+const FORECAST_CHART_HEIGHT = 260;
+const FORECAST_CHART_MARGIN = { left: 44, right: 16, top: 16, bottom: 28 };
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
   const element = document.createElement(tag);
@@ -82,14 +85,14 @@ function buildChart(
 ): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('ocgo-forecast-chart');
-  svg.setAttribute('viewBox', '0 0 760 260');
+  svg.setAttribute('viewBox', `0 0 ${FORECAST_CHART_WIDTH} ${FORECAST_CHART_HEIGHT}`);
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', t(language, 'forecast.chartAria', { window: windowLabel(language, windowKey) }));
   const points = window.chart;
   if (!points.length) return svg;
-  const margin = { left: 44, right: 16, top: 16, bottom: 28 };
-  const width = 760 - margin.left - margin.right;
-  const height = 260 - margin.top - margin.bottom;
+  const margin = FORECAST_CHART_MARGIN;
+  const width = FORECAST_CHART_WIDTH - margin.left - margin.right;
+  const height = FORECAST_CHART_HEIGHT - margin.top - margin.bottom;
   const xMin = points[0].at;
   const xMax = points[points.length - 1].at;
   const allValues = points.flatMap((point) => [chartValue(point, window, 'actual'), chartValue(point, window, 'p10'), chartValue(point, window, 'p50'), chartValue(point, window, 'p90')])
@@ -177,14 +180,14 @@ function buildChart(
 
   const axisStart = document.createElementNS('http://www.w3.org/2000/svg', 'text');
   axisStart.setAttribute('x', String(margin.left));
-  axisStart.setAttribute('y', String(260 - 8));
+  axisStart.setAttribute('y', String(FORECAST_CHART_HEIGHT - 8));
   axisStart.setAttribute('text-anchor', 'start');
   axisStart.classList.add('ocgo-forecast-axis-label');
   axisStart.textContent = formatDateTime(xMin);
   svg.appendChild(axisStart);
   const axisEnd = document.createElementNS('http://www.w3.org/2000/svg', 'text');
   axisEnd.setAttribute('x', String(margin.left + width));
-  axisEnd.setAttribute('y', String(260 - 8));
+  axisEnd.setAttribute('y', String(FORECAST_CHART_HEIGHT - 8));
   axisEnd.setAttribute('text-anchor', 'end');
   axisEnd.classList.add('ocgo-forecast-axis-label');
   axisEnd.textContent = formatDateTime(xMax);
@@ -353,8 +356,99 @@ export class ForecastPanel {
       controls.appendChild(button);
     }
     head.appendChild(controls);
-    section.append(head, buildChart(this.language, model.windows[this.windowKey], model, this.windowKey));
+    const chart = buildChart(this.language, model.windows[this.windowKey], model, this.windowKey);
+    this.bindChartHover(chart, model, model.windows[this.windowKey]);
+    section.append(head, chart);
     return section;
+  }
+
+
+  private chartValue(value: number, window: ForecastWindowForecast): string {
+    return window.limitUsd === null || window.limitUsd <= 0
+      ? formatUsd(value)
+      : formatPercent(value / window.limitUsd);
+  }
+
+  private bindChartHover(svg: SVGSVGElement, model: ModelQuotaForecast, window: ForecastWindowForecast): void {
+    const points = window.chart;
+    if (points.length < 2) return;
+    const margin = FORECAST_CHART_MARGIN;
+    const width = FORECAST_CHART_WIDTH - margin.left - margin.right;
+    const height = FORECAST_CHART_HEIGHT - margin.top - margin.bottom;
+    const xMin = points[0].at;
+    const xMax = points[points.length - 1].at;
+    if (xMax <= xMin) return;
+    const x = (value: number) => margin.left + (value - xMin) / (xMax - xMin) * width;
+    const band = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    band.classList.add('ocgo-forecast-hover-band');
+    band.setAttribute('y', String(margin.top));
+    band.setAttribute('height', String(height));
+    band.style.display = 'none';
+    svg.appendChild(band);
+
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const point = points[index];
+      if (point.at <= previous.at) continue;
+      const left = x(previous.at);
+      const right = x(point.at);
+      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      hit.classList.add('ocgo-forecast-hover-target');
+      hit.setAttribute('x', String(left));
+      hit.setAttribute('y', String(margin.top));
+      hit.setAttribute('width', String(Math.max(1, right - left)));
+      hit.setAttribute('height', String(height));
+      hit.setAttribute('tabindex', '0');
+      hit.setAttribute('role', 'img');
+      hit.setAttribute('aria-label', `${model.displayName} · ${windowLabel(this.language, window.key)} · ${formatDateTime(point.at)}`);
+      const show = (clientX: number, clientY: number) => {
+        if (!this.tooltip) return;
+        band.setAttribute('x', String(left));
+        band.setAttribute('width', String(Math.max(1, right - left)));
+        band.style.display = '';
+        const rows: Array<[string, string]> = [];
+        if (point.actualUsd !== null) {
+          rows.push([t(this.language, 'forecast.chartHistory'), this.chartValue(point.actualUsd, window)]);
+          rows.push([t(this.language, 'forecast.absoluteLabel'), formatUsd(point.actualUsd)]);
+        }
+        if (point.p50Usd !== null) {
+          rows.push([t(this.language, 'forecast.chartP50'), this.chartValue(point.p50Usd, window)]);
+          if (point.p10Usd !== null) rows.push([t(this.language, 'forecast.chartP10'), this.chartValue(point.p10Usd, window)]);
+          if (point.p90Usd !== null) rows.push([t(this.language, 'forecast.chartP90'), this.chartValue(point.p90Usd, window)]);
+          rows.push([t(this.language, 'forecast.absoluteLabel'), formatUsd(point.p50Usd)]);
+        }
+        const footer = window.limitUsd === null
+          ? t(this.language, 'forecast.unlimited')
+          : window.key === 'next24h'
+            ? t(this.language, 'forecast.tooltip24hMeaning')
+            : t(this.language, 'forecast.tooltipPercentMeaning');
+        showDataTooltip(
+          this.tooltip,
+          `${model.displayName} · ${windowLabel(this.language, window.key)} · ${formatDateTime(point.at)}`,
+          rows,
+          this.panel,
+          clientX,
+          clientY,
+          footer,
+        );
+      };
+      const showAtTarget = () => {
+        const rect = hit.getBoundingClientRect();
+        show(rect.right, rect.bottom);
+      };
+      hit.addEventListener('pointerenter', (event) => show(event.clientX, event.clientY));
+      hit.addEventListener('pointermove', (event) => show(event.clientX, event.clientY));
+      hit.addEventListener('pointerleave', () => {
+        band.style.display = 'none';
+        hideChartTooltip(this.tooltip);
+      });
+      hit.addEventListener('focus', showAtTarget);
+      hit.addEventListener('blur', () => {
+        band.style.display = 'none';
+        hideChartTooltip(this.tooltip);
+      });
+      svg.appendChild(hit);
+    }
   }
 
   private renderTable(result: QuotaForecastResult, selected: ModelQuotaForecast): HTMLElement {

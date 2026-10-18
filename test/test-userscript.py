@@ -739,6 +739,15 @@ def test_forecast_beta_toggle():
         assert "EWMA" in info_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
+        chart_targets = page.locator('[data-view="forecast"] .ocgo-forecast-hover-target')
+        assert chart_targets.count() > 0
+        chart_targets.last.hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        chart_text = tooltip.inner_text()
+        assert "预测中位数（p50）" in chart_text
+        assert "预测上界（p90）" in chart_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
         deepseek.click()
         page.wait_for_timeout(100)
         assert page.locator('[data-view="forecast"] .ocgo-forecast-row.ocgo-active').get_attribute("data-model") == "deepseek-v4.1-flash"

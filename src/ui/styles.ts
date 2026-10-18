@@ -276,4 +276,8 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-percent { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 .ocgo-forecast-percent:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
+.ocgo-forecast-hover-target { fill: transparent; pointer-events: all; }
+.ocgo-forecast-hover-band { fill: rgba(255,255,255,.055); pointer-events: none; }
+.ocgo-forecast-hover-target:focus { outline: none; }
+
 `;
