@@ -26,6 +26,8 @@ Adds a performance-focused floating dashboard to the [OpenCode Console](https://
 - Colors, card layers, overlays, and thin scrollbars match the official OpenCode Console theme.
 - The chart launcher toggles the panel and can be dragged. Clicking outside the panel or pressing `Escape` closes it, and the panel supports eight-direction resizing.
 
+For formulas, window rules, worked examples, and code mapping, see the [usage forecast implementation guide](docs/usage-forecast-implementation.zh-CN.md).
+
 ## Data source and compatibility
 
 The script uses the current direct HTTP API of OpenCode Console:

@@ -26,6 +26,8 @@
 - 界面配色、卡片层级、浮层和细滚动条与官方 OpenCode 控制台保持一致。
 - 图表按钮可点击开关面板并自由拖动；点击面板外区域或按 `Escape` 关闭；面板支持八方向缩放。
 
+计算公式、窗口规则、可复算示例和代码映射见 [用量预测实现说明](docs/usage-forecast-implementation.zh-CN.md)。
+
 ## 数据来源与兼容性
 
 脚本读取当前 OpenCode Console 的直接 HTTP API：
