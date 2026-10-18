@@ -157,6 +157,10 @@ export class Panel {
   private cards?: HTMLElement;
   private overviewModels?: HTMLElement;
   private overviewLegacyNote?: HTMLElement;
+  private overviewForecastSection?: HTMLElement;
+  private overviewForecast?: HTMLElement;
+  private overviewForecastPanel?: ForecastPanel;
+  private overviewForecastModel?: HTMLElement;
   private charts: HTMLElement[] = [];
   private chartModels?: HTMLElement;
   private chartGrid?: HTMLElement;
@@ -470,6 +474,7 @@ export class Panel {
     this.chartTooltip = node('div', 'ocgo-chart-tooltip ocgo-hidden');
     this.chartTooltip.setAttribute('role', 'tooltip');
     this.forecastPanel?.setTooltip(this.chartTooltip);
+    this.overviewForecastPanel?.setTooltip(this.chartTooltip);
     this.toast = node('div', 'ocgo-toast ocgo-hidden');
     this.toast.setAttribute('role', 'status');
     this.toast.setAttribute('aria-live', 'polite');
@@ -494,6 +499,20 @@ export class Panel {
     const view = node('section', 'ocgo-view');
     view.dataset.view = 'overview';
     this.cards = node('div', 'ocgo-cards');
+    const forecastSection = node('section', 'ocgo-section ocgo-overview-forecast');
+    forecastSection.hidden = true;
+    forecastSection.dataset.overviewForecast = '';
+    const forecastHead = node('div', 'ocgo-section-head');
+    const forecastTitleGroup = node('div', 'ocgo-forecast-chart-title');
+    const forecastTitle = this.textFor('forecast.overviewTitle');
+    forecastTitle.className = 'ocgo-section-title';
+    forecastTitleGroup.append(forecastTitle, this.rememberI18n('badge.beta', node('span', 'ocgo-tab-badge')));
+    this.overviewForecastModel = node('span', 'ocgo-note');
+    forecastHead.append(forecastTitleGroup, this.overviewForecastModel);
+    this.overviewForecast = node('div', 'ocgo-forecast-view ocgo-overview-forecast-cards');
+    this.overviewForecastPanel = new ForecastPanel(this.overviewForecast, this.panel ?? this.overviewForecast);
+    forecastSection.append(forecastHead, this.overviewForecast);
+    this.overviewForecastSection = forecastSection;
     const section = node('section', 'ocgo-section');
     const head = node('div', 'ocgo-section-head');
     const legacyNote = this.textFor('legacy.note');
@@ -501,7 +520,7 @@ export class Panel {
     head.append(this.textFor('chart.models'), legacyNote);
     this.overviewModels = node('div', 'ocgo-table-wrap');
     section.append(head, this.overviewModels);
-    view.append(this.cards, section);
+    view.append(this.cards, forecastSection, section);
     return view;
   }
 
@@ -868,7 +887,7 @@ export class Panel {
     if (open) {
       this.hasOpened = true;
       this.render();
-      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+      if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
       window.setTimeout(() => this.autoSyncIfStale(), 150);
     }
   }
@@ -931,7 +950,7 @@ export class Panel {
     }
     this.renderChrome();
     this.render();
-    if (enabled && this.activeTab === 'forecast') void this.loadForecast(false);
+    if (enabled && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
   }
 
   private resetForecast(): void {
@@ -1023,7 +1042,21 @@ export class Panel {
     }
   }
 
+  private currentForecastResult(): QuotaForecastResult | undefined {
+    if (!this.forecastRecords || !this.pricing) return undefined;
+    return buildQuotaForecast({
+      records: this.forecastRecords,
+      pricing: this.pricing,
+      filters: this.filters,
+      status: this.forecastStatus,
+      syncState: this.syncState,
+      statusError: this.forecastStatusError,
+      now: Date.now(),
+    });
+  }
+
   private renderForecast(): void {
+    if (this.activeTab === 'overview') this.renderOverviewForecast();
     if (!this.open || !this.experimentalForecast || !this.forecastPanel) return;
     if (!this.workspaceID) {
       this.forecastPanel.renderEmpty(this.language, t(this.language, 'error.workspace'), t(this.language, 'forecast.emptyHint'));
@@ -1037,20 +1070,13 @@ export class Panel {
       this.forecastPanel.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
       return;
     }
-    if (!this.forecastRecords || !this.pricing) {
+    const result = this.currentForecastResult();
+    if (!result) {
       this.forecastPanel.renderEmpty(this.language);
       return;
     }
-    this.forecastResult = buildQuotaForecast({
-      records: this.forecastRecords,
-      pricing: this.pricing,
-      filters: this.filters,
-      status: this.forecastStatus,
-      syncState: this.syncState,
-      statusError: this.forecastStatusError,
-      now: Date.now(),
-    });
-    if (!this.forecastRecords.length) {
+    this.forecastResult = result;
+    if (!this.forecastRecords?.length) {
       this.forecastPanel.renderEmpty(this.language);
       return;
     }
@@ -1087,9 +1113,10 @@ export class Panel {
     this.customRange?.classList.toggle('ocgo-show', tab !== 'forecast' && this.rangePreset === 'custom');
     if (tab === 'data') this.renderData();
     if (tab === 'requests') this.renderRequests();
-    if (tab === 'forecast' && this.open) {
+    if ((tab === 'forecast' || tab === 'overview') && this.open) {
       if (this.forecastStale || !this.forecastResult) void this.loadForecast(false);
-      else this.renderForecast();
+      else if (tab === 'forecast') this.renderForecast();
+      else this.renderOverviewForecast();
     }
   }
 
@@ -1302,7 +1329,57 @@ export class Panel {
     if (this.overviewLegacyNote) {
       this.overviewLegacyNote.style.display = this.records.some((record) => record.legacy) ? '' : 'none';
     }
+    this.renderOverviewForecast();
     this.renderModelTable(this.overviewModels, this.analysis.models);
+  }
+
+  private renderOverviewForecast(): void {
+    const section = this.overviewForecastSection;
+    const panel = this.overviewForecastPanel;
+    if (!section || !panel) return;
+    section.hidden = !this.experimentalForecast;
+    if (!this.experimentalForecast) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      return;
+    }
+    if (this.forecastLoading) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderLoading(this.language);
+      return;
+    }
+    if (this.forecastError) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
+      return;
+    }
+    if (!this.workspaceID) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderEmpty(this.language, t(this.language, 'error.workspace'), t(this.language, 'forecast.emptyHint'));
+      return;
+    }
+    const result = this.currentForecastResult();
+    if (!result) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderEmpty(this.language);
+      return;
+    }
+    this.forecastResult = result;
+    if (!result.models.length) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderEmpty(this.language, t(this.language, 'forecast.noConsumedModels'), t(this.language, 'forecast.emptyHint'));
+      return;
+    }
+    const model = result.models.find((item) => item.model === this.filters.model) ?? result.riskiest ?? result.models[0];
+    if (!model) {
+      if (this.overviewForecastModel) this.overviewForecastModel.textContent = '';
+      panel.renderEmpty(this.language);
+      return;
+    }
+    if (this.overviewForecastModel) {
+      const role = this.filters.model ? t(this.language, 'forecast.selectedModel') : t(this.language, 'forecast.riskiest');
+      this.overviewForecastModel.textContent = `${model.displayName} · ${role}`;
+    }
+    panel.renderSummaryCards(result, this.filters.model, this.language);
   }
 
   private renderCharts(): void {
@@ -1754,7 +1831,7 @@ export class Panel {
         this.logger.warn('log.migrationSkipped', { error: error instanceof Error ? error.message : String(error) });
       }
       await this.reloadRecords();
-      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+      if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
       void this.refreshWorkspaces();
       void this.refreshPrincipals();
       if (this.open) window.setTimeout(() => this.autoSyncIfStale(), 200);
@@ -1867,7 +1944,7 @@ export class Panel {
       });
       await this.reloadRecords();
       this.forecastStale = true;
-      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+      if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
       this.logger.info(result.cacheHit ? 'log.syncCached' : 'log.syncComplete', {
         fetched: result.fetched,
         added: result.added,
@@ -1883,7 +1960,7 @@ export class Panel {
       }
       await this.reloadRecords();
       this.forecastStale = true;
-      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+      if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
     } finally {
       this.busy = false;
       this.progress = undefined;
@@ -1922,7 +1999,7 @@ export class Panel {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       void this.reloadRecords();
-      if (this.open && this.activeTab === 'forecast') void this.loadForecast(false);
+      if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
     }, 300);
   }
 

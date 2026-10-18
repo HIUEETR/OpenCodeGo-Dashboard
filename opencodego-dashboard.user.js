@@ -556,15 +556,18 @@
     "forecast.riskiestHelpHead": "什么是“最紧模型”？",
     "forecast.riskiestHelpWindow": "当前最紧窗口",
     "forecast.riskiestHelpWindowValue": "{window}，p90 {value}",
-    "forecast.riskiestHelpBasis": "判定方式",
-    "forecast.riskiestHelpBasisValue": "5h、周、月三个窗口的 p90 利用率取最高",
-    "forecast.riskiestHelpFooter": "p90 是偏保守的风险上沿。不同模型的额度互相独立，因此这里展示风险最高的单个模型，不合并计算。",
+    "forecast.riskiestHelpFooter": "“最紧模型”就是当前最接近额度上限的模型，也就是剩余额度最少的模型。系统只在 5 小时、本周、本月这三个窗口中比较。每个模型先取出自己三个窗口里最高的 p90 预计利用率，作为风险值，再在所有已有消耗的模型中选风险值最高的一个。比如 A 模型最紧的是本周 70%，B 模型最紧的是 5 小时 90%，那么 B 就是“最紧模型”。",
     "forecast.selectedModel": "当前模型",
+    "forecast.overviewTitle": "额度预测",
     "forecast.summary": "{model} 的四个额度口径",
     "forecast.windowFiveHour": "5 小时",
     "forecast.window24h": "未来 24h",
     "forecast.windowWeek": "本周",
     "forecast.windowMonth": "本月",
+    "forecast.cardFiveHour": "到 5 小时重置时预计累计消耗",
+    "forecast.card24h": "从现在的未来 24 小时内预计新增消耗",
+    "forecast.cardWeek": "到周重置时预计累计消耗",
+    "forecast.cardMonth": "到月重置时预计累计消耗",
     "forecast.used": "已用 {value}",
     "forecast.projected": "预计 {value}",
     "forecast.p90Short": "p90 {value}",
@@ -855,15 +858,18 @@
     "forecast.riskiestHelpHead": "What does “Tightest model” mean?",
     "forecast.riskiestHelpWindow": "Tightest window",
     "forecast.riskiestHelpWindowValue": "{window}, p90 {value}",
-    "forecast.riskiestHelpBasis": "Selection rule",
-    "forecast.riskiestHelpBasisValue": "Highest p90 utilization across 5h, weekly, and monthly",
-    "forecast.riskiestHelpFooter": "p90 is a conservative risk bound. Model quotas are independent, so this shows the single riskiest model instead of combining usage.",
+    "forecast.riskiestHelpFooter": "The tightest model is the model currently closest to its quota limit, with the least headroom remaining. The comparison only considers the 5-hour, weekly, and monthly windows. Each model's highest p90 projected utilization across those windows becomes its risk score, and the model with the highest score is selected. For example, if model A peaks at 70% weekly and model B at 90% for the 5-hour window, model B is the tightest model.",
     "forecast.selectedModel": "Selected model",
+    "forecast.overviewTitle": "Quota forecast",
     "forecast.summary": "Four quota horizons for {model}",
     "forecast.windowFiveHour": "5 hours",
     "forecast.window24h": "Next 24h",
     "forecast.windowWeek": "This week",
     "forecast.windowMonth": "This month",
+    "forecast.cardFiveHour": "Projected cumulative usage by the 5-hour reset",
+    "forecast.card24h": "Projected new usage over the next 24 hours",
+    "forecast.cardWeek": "Projected cumulative usage by the weekly reset",
+    "forecast.cardMonth": "Projected cumulative usage by the monthly reset",
     "forecast.used": "Used {value}",
     "forecast.projected": "Projected {value}",
     "forecast.p90Short": "p90 {value}",
@@ -2873,6 +2879,9 @@
   function windowLabel(language, key) {
     return t(language, `forecast.window${key === "fiveHour" ? "FiveHour" : key === "next24h" ? "24h" : key === "week" ? "Week" : "Month"}`);
   }
+  function cardTitle(language, key) {
+    return t(language, `forecast.card${key === "fiveHour" ? "FiveHour" : key === "next24h" ? "24h" : key === "week" ? "Week" : "Month"}`);
+  }
   function confidenceLabel(language, model) {
     const key = model.confidence === "high" ? "forecast.confidenceHigh" : model.confidence === "medium" ? "forecast.confidenceMedium" : "forecast.confidenceLow";
     return t(language, key);
@@ -3033,6 +3042,15 @@
     setTooltip(tooltip) {
       this.tooltip = tooltip;
     }
+    renderSummaryCards(result, selectedModel, language) {
+      this.result = result;
+      this.selectedModel = selectedModel;
+      this.language = language;
+      hideChartTooltip(this.tooltip);
+      this.root.replaceChildren();
+      const model = result.models.find((item) => item.model === selectedModel) ?? result.riskiest ?? result.models[0];
+      if (model) this.root.appendChild(this.buildCards(model));
+    }
     renderLoading(language) {
       hideChartTooltip(this.tooltip);
       this.root.replaceChildren(this.state(t(language, "forecast.loading"), "ocgo-note"));
@@ -3073,7 +3091,7 @@
         return;
       }
       this.root.appendChild(this.renderHeader(result, model));
-      this.root.appendChild(this.renderCards(model));
+      this.root.appendChild(this.buildCards(model));
       this.root.appendChild(this.renderChartSection(result, model));
       this.root.appendChild(this.renderTable(result, model));
       this.root.appendChild(this.renderFooter(result, model));
@@ -3109,7 +3127,7 @@
       }
       return header;
     }
-    renderCards(model) {
+    buildCards(model) {
       const grid = node("div", "ocgo-forecast-cards");
       for (const key of WINDOW_KEYS) {
         const window2 = model.windows[key];
@@ -3128,7 +3146,7 @@
           const p90 = window2.p90Ratio === null ? "—" : formatPercent(window2.p90Ratio);
           sub.textContent = `${absoluteWindow(window2)} · ${t(this.language, "forecast.p90Short", { value: p90 })}`;
         }
-        card.append(node("div", "ocgo-card-label", windowLabel(this.language, key)), value, sub);
+        card.append(node("div", "ocgo-card-label", cardTitle(this.language, key)), value, sub);
         const detail = node("div", "ocgo-card-detail", resetText(this.language, window2, model));
         detail.title = quantileTitle(window2, this.language);
         card.appendChild(detail);
@@ -3372,10 +3390,6 @@
             })
           ]);
         }
-        rows.push([
-          t(this.language, "forecast.riskiestHelpBasis"),
-          t(this.language, "forecast.riskiestHelpBasisValue")
-        ]);
         showDataTooltip(
           this.tooltip,
           t(this.language, "forecast.riskiestHelpHead"),
@@ -3715,6 +3729,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .ocgo-forecast-card { min-height: 116px; }
 .ocgo-forecast-card .ocgo-card-value { font-size: 18px; }
+.ocgo-forecast-card .ocgo-card-label { min-height: 27px; text-transform: none; letter-spacing: 0; line-height: 1.35; }
 .ocgo-card-detail { margin-top: 5px; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
 .ocgo-danger-text { color: var(--danger) !important; }
 .ocgo-forecast-chart-section .ocgo-section-head { align-items: center; }
@@ -3817,6 +3832,10 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     cards;
     overviewModels;
     overviewLegacyNote;
+    overviewForecastSection;
+    overviewForecast;
+    overviewForecastPanel;
+    overviewForecastModel;
     charts = [];
     chartModels;
     chartGrid;
@@ -4117,6 +4136,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.chartTooltip = node2("div", "ocgo-chart-tooltip ocgo-hidden");
       this.chartTooltip.setAttribute("role", "tooltip");
       this.forecastPanel?.setTooltip(this.chartTooltip);
+      this.overviewForecastPanel?.setTooltip(this.chartTooltip);
       this.toast = node2("div", "ocgo-toast ocgo-hidden");
       this.toast.setAttribute("role", "status");
       this.toast.setAttribute("aria-live", "polite");
@@ -4140,6 +4160,20 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       const view = node2("section", "ocgo-view");
       view.dataset.view = "overview";
       this.cards = node2("div", "ocgo-cards");
+      const forecastSection = node2("section", "ocgo-section ocgo-overview-forecast");
+      forecastSection.hidden = true;
+      forecastSection.dataset.overviewForecast = "";
+      const forecastHead = node2("div", "ocgo-section-head");
+      const forecastTitleGroup = node2("div", "ocgo-forecast-chart-title");
+      const forecastTitle = this.textFor("forecast.overviewTitle");
+      forecastTitle.className = "ocgo-section-title";
+      forecastTitleGroup.append(forecastTitle, this.rememberI18n("badge.beta", node2("span", "ocgo-tab-badge")));
+      this.overviewForecastModel = node2("span", "ocgo-note");
+      forecastHead.append(forecastTitleGroup, this.overviewForecastModel);
+      this.overviewForecast = node2("div", "ocgo-forecast-view ocgo-overview-forecast-cards");
+      this.overviewForecastPanel = new ForecastPanel(this.overviewForecast, this.panel ?? this.overviewForecast);
+      forecastSection.append(forecastHead, this.overviewForecast);
+      this.overviewForecastSection = forecastSection;
       const section = node2("section", "ocgo-section");
       const head = node2("div", "ocgo-section-head");
       const legacyNote = this.textFor("legacy.note");
@@ -4147,7 +4181,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       head.append(this.textFor("chart.models"), legacyNote);
       this.overviewModels = node2("div", "ocgo-table-wrap");
       section.append(head, this.overviewModels);
-      view.append(this.cards, section);
+      view.append(this.cards, forecastSection, section);
       return view;
     }
     buildChartsView() {
@@ -4496,7 +4530,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (open) {
         this.hasOpened = true;
         this.render();
-        if (this.open && this.activeTab === "forecast") void this.loadForecast(false);
+        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
         window.setTimeout(() => this.autoSyncIfStale(), 150);
       }
     }
@@ -4554,7 +4588,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       }
       this.renderChrome();
       this.render();
-      if (enabled && this.activeTab === "forecast") void this.loadForecast(false);
+      if (enabled && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
     }
     resetForecast() {
       this.forecastController?.abort();
@@ -4642,7 +4676,20 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         }
       }
     }
+    currentForecastResult() {
+      if (!this.forecastRecords || !this.pricing) return void 0;
+      return buildQuotaForecast({
+        records: this.forecastRecords,
+        pricing: this.pricing,
+        filters: this.filters,
+        status: this.forecastStatus,
+        syncState: this.syncState,
+        statusError: this.forecastStatusError,
+        now: Date.now()
+      });
+    }
     renderForecast() {
+      if (this.activeTab === "overview") this.renderOverviewForecast();
       if (!this.open || !this.experimentalForecast || !this.forecastPanel) return;
       if (!this.workspaceID) {
         this.forecastPanel.renderEmpty(this.language, t(this.language, "error.workspace"), t(this.language, "forecast.emptyHint"));
@@ -4656,20 +4703,13 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.forecastPanel.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
         return;
       }
-      if (!this.forecastRecords || !this.pricing) {
+      const result = this.currentForecastResult();
+      if (!result) {
         this.forecastPanel.renderEmpty(this.language);
         return;
       }
-      this.forecastResult = buildQuotaForecast({
-        records: this.forecastRecords,
-        pricing: this.pricing,
-        filters: this.filters,
-        status: this.forecastStatus,
-        syncState: this.syncState,
-        statusError: this.forecastStatusError,
-        now: Date.now()
-      });
-      if (!this.forecastRecords.length) {
+      this.forecastResult = result;
+      if (!this.forecastRecords?.length) {
         this.forecastPanel.renderEmpty(this.language);
         return;
       }
@@ -4705,9 +4745,10 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.customRange?.classList.toggle("ocgo-show", tab !== "forecast" && this.rangePreset === "custom");
       if (tab === "data") this.renderData();
       if (tab === "requests") this.renderRequests();
-      if (tab === "forecast" && this.open) {
+      if ((tab === "forecast" || tab === "overview") && this.open) {
         if (this.forecastStale || !this.forecastResult) void this.loadForecast(false);
-        else this.renderForecast();
+        else if (tab === "forecast") this.renderForecast();
+        else this.renderOverviewForecast();
       }
     }
     setLanguage(language) {
@@ -4904,7 +4945,56 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (this.overviewLegacyNote) {
         this.overviewLegacyNote.style.display = this.records.some((record) => record.legacy) ? "" : "none";
       }
+      this.renderOverviewForecast();
       this.renderModelTable(this.overviewModels, this.analysis.models);
+    }
+    renderOverviewForecast() {
+      const section = this.overviewForecastSection;
+      const panel2 = this.overviewForecastPanel;
+      if (!section || !panel2) return;
+      section.hidden = !this.experimentalForecast;
+      if (!this.experimentalForecast) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        return;
+      }
+      if (this.forecastLoading) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderLoading(this.language);
+        return;
+      }
+      if (this.forecastError) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
+        return;
+      }
+      if (!this.workspaceID) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderEmpty(this.language, t(this.language, "error.workspace"), t(this.language, "forecast.emptyHint"));
+        return;
+      }
+      const result = this.currentForecastResult();
+      if (!result) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderEmpty(this.language);
+        return;
+      }
+      this.forecastResult = result;
+      if (!result.models.length) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderEmpty(this.language, t(this.language, "forecast.noConsumedModels"), t(this.language, "forecast.emptyHint"));
+        return;
+      }
+      const model = result.models.find((item) => item.model === this.filters.model) ?? result.riskiest ?? result.models[0];
+      if (!model) {
+        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
+        panel2.renderEmpty(this.language);
+        return;
+      }
+      if (this.overviewForecastModel) {
+        const role = this.filters.model ? t(this.language, "forecast.selectedModel") : t(this.language, "forecast.riskiest");
+        this.overviewForecastModel.textContent = `${model.displayName} · ${role}`;
+      }
+      panel2.renderSummaryCards(result, this.filters.model, this.language);
     }
     renderCharts() {
       if (!this.analysis) return;
@@ -5326,7 +5416,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
           this.logger.warn("log.migrationSkipped", { error: error instanceof Error ? error.message : String(error) });
         }
         await this.reloadRecords();
-        if (this.open && this.activeTab === "forecast") void this.loadForecast(false);
+        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
         void this.refreshWorkspaces();
         void this.refreshPrincipals();
         if (this.open) window.setTimeout(() => this.autoSyncIfStale(), 200);
@@ -5433,7 +5523,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         });
         await this.reloadRecords();
         this.forecastStale = true;
-        if (this.open && this.activeTab === "forecast") void this.loadForecast(false);
+        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
         this.logger.info(result.cacheHit ? "log.syncCached" : "log.syncComplete", {
           fetched: result.fetched,
           added: result.added,
@@ -5449,7 +5539,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         }
         await this.reloadRecords();
         this.forecastStale = true;
-        if (this.open && this.activeTab === "forecast") void this.loadForecast(false);
+        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
       } finally {
         this.busy = false;
         this.progress = void 0;
@@ -5483,7 +5573,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = window.setTimeout(() => {
         void this.reloadRecords();
-        if (this.open && this.activeTab === "forecast") void this.loadForecast(false);
+        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
       }, 300);
     }
     setError(error) {

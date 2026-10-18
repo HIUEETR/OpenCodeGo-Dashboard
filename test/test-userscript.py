@@ -702,6 +702,9 @@ def test_forecast_beta_toggle():
         page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
         forecast_tab = page.locator('[data-tab="forecast"]')
         assert forecast_tab.is_hidden()
+        assert page.locator('[data-view="overview"]').is_visible()
+        overview_forecast = page.locator('[data-view="overview"] [data-overview-forecast]')
+        assert overview_forecast.is_hidden()
         assert not status_seen, status_seen
 
         page.locator('[data-tab="data"]').click()
@@ -711,10 +714,26 @@ def test_forecast_beta_toggle():
         assert "Beta" in forecast_tab.inner_text()
         assert not status_seen, status_seen
 
+        page.locator('[data-tab="overview"]').click()
+        overview_forecast.wait_for(state="visible", timeout=15000)
+        assert overview_forecast.locator(".ocgo-forecast-card").count() == 4
+        overview_table = page.locator('[data-view="overview"] tbody').first
+        overview_table.wait_for(state="visible", timeout=5000)
+        forecast_box = overview_forecast.bounding_box()
+        table_box = overview_table.bounding_box()
+        assert forecast_box is not None and table_box is not None
+        assert forecast_box["y"] < table_box["y"]
+
         forecast_tab.click()
         cards = page.locator('[data-view="forecast"] .ocgo-forecast-card')
         cards.first.wait_for(timeout=15000)
         assert cards.count() == 4
+        assert cards.locator(".ocgo-card-label").all_inner_texts() == [
+            "到 5 小时重置时预计累计消耗",
+            "从现在的未来 24 小时内预计新增消耗",
+            "到周重置时预计累计消耗",
+            "到月重置时预计累计消耗",
+        ]
         assert status_seen and "x-org-id" in status_seen[0]["headers"]
         assert status_seen[0]["headers"]["x-org-id"] == WORKSPACE
         rows = page.locator('[data-view="forecast"] .ocgo-forecast-table tbody tr')
@@ -753,9 +772,9 @@ def test_forecast_beta_toggle():
         tooltip.wait_for(state="visible", timeout=5000)
         tightest_text = tooltip.inner_text()
         assert "什么是“最紧模型”" in tightest_text
-        assert "判定方式" in tightest_text
+        assert "剩余额度最少" in tightest_text
+        assert "风险值最高" in tightest_text
         assert "p90" in tightest_text
-        assert "不合并计算" in tightest_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
         chart_targets = page.locator('[data-view="forecast"] .ocgo-forecast-hover-target')

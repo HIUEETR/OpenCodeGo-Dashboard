@@ -26,6 +26,10 @@ function windowLabel(language: Language, key: ForecastWindowKey): string {
   return t(language, `forecast.window${key === 'fiveHour' ? 'FiveHour' : key === 'next24h' ? '24h' : key === 'week' ? 'Week' : 'Month'}`);
 }
 
+function cardTitle(language: Language, key: ForecastWindowKey): string {
+  return t(language, `forecast.card${key === 'fiveHour' ? 'FiveHour' : key === 'next24h' ? '24h' : key === 'week' ? 'Week' : 'Month'}`);
+}
+
 function confidenceLabel(language: Language, model: ModelQuotaForecast): string {
   const key = model.confidence === 'high' ? 'forecast.confidenceHigh' : model.confidence === 'medium' ? 'forecast.confidenceMedium' : 'forecast.confidenceLow';
   return t(language, key);
@@ -215,6 +219,16 @@ export class ForecastPanel {
     this.tooltip = tooltip;
   }
 
+  renderSummaryCards(result: QuotaForecastResult, selectedModel: string, language: Language): void {
+    this.result = result;
+    this.selectedModel = selectedModel;
+    this.language = language;
+    hideChartTooltip(this.tooltip);
+    this.root.replaceChildren();
+    const model = result.models.find((item) => item.model === selectedModel) ?? result.riskiest ?? result.models[0];
+    if (model) this.root.appendChild(this.buildCards(model));
+  }
+
   renderLoading(language: Language): void {
     hideChartTooltip(this.tooltip);
     this.root.replaceChildren(this.state(t(language, 'forecast.loading'), 'ocgo-note'));
@@ -264,7 +278,7 @@ export class ForecastPanel {
       return;
     }
     this.root.appendChild(this.renderHeader(result, model));
-    this.root.appendChild(this.renderCards(model));
+    this.root.appendChild(this.buildCards(model));
     this.root.appendChild(this.renderChartSection(result, model));
     this.root.appendChild(this.renderTable(result, model));
     this.root.appendChild(this.renderFooter(result, model));
@@ -303,7 +317,7 @@ export class ForecastPanel {
     return header;
   }
 
-  private renderCards(model: ModelQuotaForecast): HTMLElement {
+  private buildCards(model: ModelQuotaForecast): HTMLElement {
     const grid = node('div', 'ocgo-forecast-cards');
     for (const key of WINDOW_KEYS) {
       const window = model.windows[key];
@@ -328,7 +342,7 @@ export class ForecastPanel {
         const p90 = window.p90Ratio === null ? '—' : formatPercent(window.p90Ratio);
         sub.textContent = `${absoluteWindow(window)} · ${t(this.language, 'forecast.p90Short', { value: p90 })}`;
       }
-      card.append(node('div', 'ocgo-card-label', windowLabel(this.language, key)), value, sub);
+      card.append(node('div', 'ocgo-card-label', cardTitle(this.language, key)), value, sub);
       const detail = node('div', 'ocgo-card-detail', resetText(this.language, window, model));
       detail.title = quantileTitle(window, this.language);
       card.appendChild(detail);
@@ -588,10 +602,6 @@ export class ForecastPanel {
           }),
         ]);
       }
-      rows.push([
-        t(this.language, 'forecast.riskiestHelpBasis'),
-        t(this.language, 'forecast.riskiestHelpBasisValue'),
-      ]);
       showDataTooltip(
         this.tooltip,
         t(this.language, 'forecast.riskiestHelpHead'),

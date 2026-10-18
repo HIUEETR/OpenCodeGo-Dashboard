@@ -245,6 +245,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .ocgo-forecast-card { min-height: 116px; }
 .ocgo-forecast-card .ocgo-card-value { font-size: 18px; }
+.ocgo-forecast-card .ocgo-card-label { min-height: 27px; text-transform: none; letter-spacing: 0; line-height: 1.35; }
 .ocgo-card-detail { margin-top: 5px; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
 .ocgo-danger-text { color: var(--danger) !important; }
 .ocgo-forecast-chart-section .ocgo-section-head { align-items: center; }
