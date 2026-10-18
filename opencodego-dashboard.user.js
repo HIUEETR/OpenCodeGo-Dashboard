@@ -553,6 +553,12 @@
     "forecast.rangeIgnored": "预测按额度窗口计算，不使用上方时间范围。",
     "forecast.noAggregate": "模型额度互相独立，不合计不同模型的已用百分比。",
     "forecast.riskiest": "最紧模型",
+    "forecast.riskiestHelpHead": "什么是“最紧模型”？",
+    "forecast.riskiestHelpWindow": "当前最紧窗口",
+    "forecast.riskiestHelpWindowValue": "{window}，p90 {value}",
+    "forecast.riskiestHelpBasis": "判定方式",
+    "forecast.riskiestHelpBasisValue": "5h、周、月三个窗口的 p90 利用率取最高",
+    "forecast.riskiestHelpFooter": "p90 是偏保守的风险上沿。不同模型的额度互相独立，因此这里展示风险最高的单个模型，不合并计算。",
     "forecast.selectedModel": "当前模型",
     "forecast.summary": "{model} 的四个额度口径",
     "forecast.windowFiveHour": "5 小时",
@@ -846,6 +852,12 @@
     "forecast.rangeIgnored": "Forecasts follow quota windows and ignore the range selector above.",
     "forecast.noAggregate": "Model quotas are independent. Usage is never summed across models.",
     "forecast.riskiest": "Tightest model",
+    "forecast.riskiestHelpHead": "What does “Tightest model” mean?",
+    "forecast.riskiestHelpWindow": "Tightest window",
+    "forecast.riskiestHelpWindowValue": "{window}, p90 {value}",
+    "forecast.riskiestHelpBasis": "Selection rule",
+    "forecast.riskiestHelpBasisValue": "Highest p90 utilization across 5h, weekly, and monthly",
+    "forecast.riskiestHelpFooter": "p90 is a conservative risk bound. Model quotas are independent, so this shows the single riskiest model instead of combining usage.",
     "forecast.selectedModel": "Selected model",
     "forecast.summary": "Four quota horizons for {model}",
     "forecast.windowFiveHour": "5 hours",
@@ -3078,7 +3090,11 @@
         node("div", "ocgo-section-title", t(this.language, "forecast.summary", { model: model.displayName }))
       );
       if (!this.selectedModel && result.riskiest?.model === model.model) {
-        text2.appendChild(node("span", "ocgo-forecast-source", t(this.language, "forecast.riskiest")));
+        const tightest = node("span", "ocgo-forecast-source ocgo-forecast-help", t(this.language, "forecast.riskiest"));
+        tightest.tabIndex = 0;
+        tightest.setAttribute("aria-label", t(this.language, "forecast.riskiestHelpHead"));
+        this.bindRiskiestTooltip(tightest, model);
+        text2.appendChild(tightest);
       }
       text2.appendChild(node("div", "ocgo-note", t(this.language, "forecast.noAggregate")));
       const meta = node("div", "ocgo-forecast-meta");
@@ -3331,6 +3347,43 @@
           clientX,
           clientY,
           footer
+        );
+      };
+      const showAtElement = () => {
+        const rect = element.getBoundingClientRect();
+        show(rect.right, rect.bottom);
+      };
+      element.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
+      element.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
+      element.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
+      element.addEventListener("focus", showAtElement);
+      element.addEventListener("blur", () => hideChartTooltip(this.tooltip));
+    }
+    bindRiskiestTooltip(element, model) {
+      const show = (clientX, clientY) => {
+        if (!this.tooltip) return;
+        const rows = [];
+        if (model.riskWindow) {
+          rows.push([
+            t(this.language, "forecast.riskiestHelpWindow"),
+            t(this.language, "forecast.riskiestHelpWindowValue", {
+              window: windowLabel(this.language, model.riskWindow),
+              value: formatPercent(model.riskScore)
+            })
+          ]);
+        }
+        rows.push([
+          t(this.language, "forecast.riskiestHelpBasis"),
+          t(this.language, "forecast.riskiestHelpBasisValue")
+        ]);
+        showDataTooltip(
+          this.tooltip,
+          t(this.language, "forecast.riskiestHelpHead"),
+          rows,
+          this.panel,
+          clientX,
+          clientY,
+          t(this.language, "forecast.riskiestHelpFooter")
         );
       };
       const showAtElement = () => {
@@ -3690,8 +3743,8 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-chart-title { display: flex; align-items: center; gap: 6px; }
 .ocgo-info-btn { width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: rgba(255,255,255,.04); color: var(--muted); font: italic 700 11px/1 Georgia, serif; cursor: help; }
 .ocgo-info-btn:hover, .ocgo-info-btn:focus-visible { color: var(--accent); border-color: rgba(118,152,253,.6); outline: none; }
-.ocgo-forecast-percent { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
-.ocgo-forecast-percent:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.ocgo-forecast-percent, .ocgo-forecast-help { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.ocgo-forecast-percent:focus-visible, .ocgo-forecast-help:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 .ocgo-forecast-hover-target { fill: transparent; pointer-events: all; }
 .ocgo-forecast-hover-band { fill: rgba(255,255,255,.055); pointer-events: none; }

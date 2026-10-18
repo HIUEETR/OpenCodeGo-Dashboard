@@ -273,8 +273,8 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-chart-title { display: flex; align-items: center; gap: 6px; }
 .ocgo-info-btn { width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: rgba(255,255,255,.04); color: var(--muted); font: italic 700 11px/1 Georgia, serif; cursor: help; }
 .ocgo-info-btn:hover, .ocgo-info-btn:focus-visible { color: var(--accent); border-color: rgba(118,152,253,.6); outline: none; }
-.ocgo-forecast-percent { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
-.ocgo-forecast-percent:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.ocgo-forecast-percent, .ocgo-forecast-help { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.ocgo-forecast-percent:focus-visible, .ocgo-forecast-help:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 .ocgo-forecast-hover-target { fill: transparent; pointer-events: all; }
 .ocgo-forecast-hover-band { fill: rgba(255,255,255,.055); pointer-events: none; }

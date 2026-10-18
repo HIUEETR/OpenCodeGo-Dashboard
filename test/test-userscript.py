@@ -747,6 +747,17 @@ def test_forecast_beta_toggle():
         assert "EWMA" in info_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
+        tightest = page.locator('[data-view="forecast"] .ocgo-forecast-help')
+        assert tightest.is_visible()
+        tightest.hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        tightest_text = tooltip.inner_text()
+        assert "什么是“最紧模型”" in tightest_text
+        assert "判定方式" in tightest_text
+        assert "p90" in tightest_text
+        assert "不合并计算" in tightest_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
         chart_targets = page.locator('[data-view="forecast"] .ocgo-forecast-hover-target')
         assert chart_targets.count() > 0
         chart_targets.last.hover()

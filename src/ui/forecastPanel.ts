@@ -283,7 +283,11 @@ export class ForecastPanel {
       node('div', 'ocgo-section-title', t(this.language, 'forecast.summary', { model: model.displayName })),
     );
     if (!this.selectedModel && result.riskiest?.model === model.model) {
-      text.appendChild(node('span', 'ocgo-forecast-source', t(this.language, 'forecast.riskiest')));
+      const tightest = node('span', 'ocgo-forecast-source ocgo-forecast-help', t(this.language, 'forecast.riskiest'));
+      tightest.tabIndex = 0;
+      tightest.setAttribute('aria-label', t(this.language, 'forecast.riskiestHelpHead'));
+      this.bindRiskiestTooltip(tightest, model);
+      text.appendChild(tightest);
     }
     text.appendChild(node('div', 'ocgo-note', t(this.language, 'forecast.noAggregate')));
     const meta = node('div', 'ocgo-forecast-meta');
@@ -558,6 +562,44 @@ export class ForecastPanel {
         clientX,
         clientY,
         footer,
+      );
+    };
+    const showAtElement = () => {
+      const rect = element.getBoundingClientRect();
+      show(rect.right, rect.bottom);
+    };
+    element.addEventListener('pointerenter', (event) => show(event.clientX, event.clientY));
+    element.addEventListener('pointermove', (event) => show(event.clientX, event.clientY));
+    element.addEventListener('pointerleave', () => hideChartTooltip(this.tooltip));
+    element.addEventListener('focus', showAtElement);
+    element.addEventListener('blur', () => hideChartTooltip(this.tooltip));
+  }
+
+  private bindRiskiestTooltip(element: HTMLElement, model: ModelQuotaForecast): void {
+    const show = (clientX: number, clientY: number) => {
+      if (!this.tooltip) return;
+      const rows: Array<[string, string]> = [];
+      if (model.riskWindow) {
+        rows.push([
+          t(this.language, 'forecast.riskiestHelpWindow'),
+          t(this.language, 'forecast.riskiestHelpWindowValue', {
+            window: windowLabel(this.language, model.riskWindow),
+            value: formatPercent(model.riskScore),
+          }),
+        ]);
+      }
+      rows.push([
+        t(this.language, 'forecast.riskiestHelpBasis'),
+        t(this.language, 'forecast.riskiestHelpBasisValue'),
+      ]);
+      showDataTooltip(
+        this.tooltip,
+        t(this.language, 'forecast.riskiestHelpHead'),
+        rows,
+        this.panel,
+        clientX,
+        clientY,
+        t(this.language, 'forecast.riskiestHelpFooter'),
       );
     };
     const showAtElement = () => {
