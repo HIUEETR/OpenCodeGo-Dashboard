@@ -307,8 +307,8 @@ def test_main_flow():
         metric_cells.nth(0).hover()
         tooltip.wait_for(state="visible", timeout=5000)
         token_metric_text = tooltip.inner_text()
-        assert "总 tokens" in token_metric_text
-        assert "缓存读" in token_metric_text
+        assert "总 Token" in token_metric_text
+        assert "缓存读取" in token_metric_text
         assert "4,020" in token_metric_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
@@ -332,22 +332,22 @@ def test_main_flow():
         assert overview_cards.locator('.ocgo-card-label').all_text_contents() == [
             "请求",
             "费用",
-            "输入 tokens",
-            "输出 tokens",
+            "输入 Token",
+            "输出 Token",
             "TTFT（平均 / 最慢）",
             "输出 TPS（平均 / 最慢）",
-            "缓存读",
+            "缓存读取",
             "缓存命中率",
         ]
-        assert overview_cards.filter(has_text="缓存写").count() == 0
+        assert overview_cards.filter(has_text="缓存写入").count() == 0
         for index in (2, 3, 6, 7):
             assert overview_cards.nth(index).locator('.ocgo-card-sub').count() == 0
-        assert "tok/s" in overview_cards.nth(5).locator('.ocgo-card-value').inner_text()
-        assert "tok/s" not in overview_cards.nth(5).locator('.ocgo-card-sub').inner_text()
+        assert "Token/s" in overview_cards.nth(5).locator('.ocgo-card-value').inner_text()
+        assert "Token/s" not in overview_cards.nth(5).locator('.ocgo-card-sub').inner_text()
         assert "TTFT 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
         assert "TPS 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
-        assert page.locator('[data-view="charts"] th').filter(has_text="总 tokens").count() == 1
-        assert page.locator('[data-view="overview"] th').filter(has_text="总 tokens").count() == 1
+        assert page.locator('[data-view="charts"] th').filter(has_text="总 Token").count() == 1
+        assert page.locator('[data-view="overview"] th').filter(has_text="总 Token").count() == 1
         assert "4.0k" in page.locator('[data-view="charts"] tbody tr').first.text_content()
         assert "4.0k" in page.locator('[data-view="overview"] tbody tr').first.text_content()
         averages = page.locator('[data-view="charts"] .ocgo-section-average')
@@ -401,10 +401,10 @@ def test_main_flow():
             return text
 
         token_tooltip = hover_chart(0)
-        assert "总 tokens" in token_tooltip
+        assert "总 Token" in token_tooltip
         assert "输入" in token_tooltip
-        assert "缓存读" in token_tooltip
-        assert "缓存写" in token_tooltip
+        assert "缓存读取" in token_tooltip
+        assert "缓存写入" in token_tooltip
         assert "输出" in token_tooltip
         assert "4,020" in token_tooltip
         assert "TTFT" not in token_tooltip
@@ -413,11 +413,11 @@ def test_main_flow():
 
         cache_tooltip = hover_chart(1)
         assert "命中率" in cache_tooltip
-        assert "缓存读" in cache_tooltip
-        assert "缓存写" in cache_tooltip
+        assert "缓存读取" in cache_tooltip
+        assert "缓存写入" in cache_tooltip
         assert "TTFT" not in cache_tooltip
         assert "TPS" not in cache_tooltip
-        assert "总 tokens" not in cache_tooltip
+        assert "总 Token" not in cache_tooltip
         assert "输入" not in cache_tooltip
         assert "输出" not in cache_tooltip
 
@@ -426,7 +426,7 @@ def test_main_flow():
         assert "TTFT 最慢" in ttft_tooltip
         assert "TTFT 样本" in ttft_tooltip
         assert "TPS" not in ttft_tooltip
-        assert "总 tokens" not in ttft_tooltip
+        assert "总 Token" not in ttft_tooltip
         assert "命中率" not in ttft_tooltip
 
         tps_tooltip = hover_chart(3)
@@ -434,7 +434,7 @@ def test_main_flow():
         assert "TPS 最慢" in tps_tooltip
         assert "TPS 样本" in tps_tooltip
         assert "TTFT" not in tps_tooltip
-        assert "总 tokens" not in tps_tooltip
+        assert "总 Token" not in tps_tooltip
         assert "命中率" not in tps_tooltip
 
         token_target = page.locator('[data-view="charts"] .ocgo-chart-box').first.locator('.ocgo-hover-target').last
@@ -449,7 +449,7 @@ def test_main_flow():
         page.locator('[data-tab="requests"]').click()
         rows = page.locator('[data-view="requests"] .ocgo-table tbody tr')
         assert rows.count() == 3, rows.count()
-        assert page.get_by_text("tok/s", exact=False).count() >= 1
+        assert page.get_by_text("Token/s", exact=False).count() >= 1
         page.locator('[data-view="requests"]').get_by_text("Alice", exact=True).first.wait_for(timeout=5000)
         page.locator('[data-view="requests"] tbody a').first.click()
         page.wait_for_selector('.ocgo-panel', state='hidden', timeout=5000)
@@ -465,7 +465,7 @@ def test_main_flow():
         pricing_section = page.locator('.ocgo-pricing-section')
         pricing_section.wait_for(state='visible', timeout=5000)
         pricing_text = pricing_section.inner_text()
-        assert "缓存模型价格" in pricing_text
+        assert "模型价格缓存" in pricing_text
         assert "DeepSeek V4.1 Flash" in pricing_text
         assert "$0.30" in pricing_text
         assert pricing_section.locator('tbody tr').count() == 2
@@ -645,12 +645,12 @@ def test_overview_cache_write_card():
         assert labels == [
             "请求",
             "费用",
-            "输入 tokens",
-            "输出 tokens",
+            "输入 Token",
+            "输出 Token",
             "TTFT（平均 / 最慢）",
             "输出 TPS（平均 / 最慢）",
-            "缓存写",
-            "缓存读",
+            "缓存写入",
+            "缓存读取",
             "缓存命中率",
         ], labels
         assert cards.nth(6).locator('.ocgo-card-value').inner_text() == "375"
@@ -731,15 +731,15 @@ def test_forecast_beta_toggle():
         cards.first.wait_for(timeout=15000)
         assert cards.count() == 4
         assert cards.locator(".ocgo-card-label").all_inner_texts() == [
-            "到 5 小时重置时预计累计消耗",
-            "从现在的未来 24 小时内预计新增消耗",
-            "到周重置时预计累计消耗",
-            "到月重置时预计累计消耗",
+            "到 5 小时重置时预计累计用量",
+            "未来 24 小时预计新增用量",
+            "到每周重置时预计累计用量",
+            "到每月重置时预计累计用量",
         ]
         assert status_seen and "x-org-id" in status_seen[0]["headers"]
         assert status_seen[0]["headers"]["x-org-id"] == WORKSPACE
         headers = page.locator('[data-view="forecast"] .ocgo-forecast-table thead th').all_inner_texts()
-        assert headers == ["模型", "月额度", "5H 已用/上限", "周已用/上限", "本月已用/月额度"]
+        assert headers == ["模型", "每月上限", "5 小时已用/上限", "每周已用/上限", "每月已用/上限"]
         rows = page.locator('[data-view="forecast"] .ocgo-forecast-table tbody tr')
         assert rows.count() == 1, rows.all_inner_texts()
         deepseek = page.locator('[data-view="forecast"] tr[data-model="deepseek-v4.1-flash"]')
@@ -753,22 +753,22 @@ def test_forecast_beta_toggle():
         tooltip.wait_for(state="visible", timeout=5000)
         tooltip_text = tooltip.inner_text()
         assert "预计（p50）" in tooltip_text
-        assert "到 5 小时重置时预计累计消耗" in tooltip_text
+        assert "到 5 小时重置时预计累计用量" in tooltip_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
         cards.locator('.ocgo-card-value').nth(1).hover()
         tooltip.wait_for(state="visible", timeout=5000)
         tooltip_24h = tooltip.inner_text()
         assert "未来 24 小时内" in tooltip_24h
-        assert "本月累计" in tooltip_24h
+        assert "每月累计" in tooltip_24h
         assert "预测终点" in tooltip_24h
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
         page.locator('[data-view="forecast"] .ocgo-info-btn').hover()
         tooltip.wait_for(state="visible", timeout=5000)
         info_text = tooltip.inner_text()
-        assert "如何阅读额度预测" in info_text
-        assert "EWMA" in info_text
+        assert "如何阅读用量预测" in info_text
+        assert "15 分钟" in info_text
         assert "时间虚线" in info_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
@@ -777,15 +777,15 @@ def test_forecast_beta_toggle():
         assert "预测 p50" in legend_text
         assert "p10–p90 区间" in legend_text
         assert "当前时刻" in legend_text
-        assert "额度重置（5h / 周 / 月）" in legend_text
+        assert "限额重置（5 小时 / 每周 / 每月）" in legend_text
         tightest = page.locator('[data-view="forecast"] .ocgo-forecast-help')
         assert tightest.is_visible()
         tightest.hover()
         tooltip.wait_for(state="visible", timeout=5000)
         tightest_text = tooltip.inner_text()
-        assert "什么是“最紧模型”" in tightest_text
-        assert "剩余额度最少" in tightest_text
-        assert "风险值最高" in tightest_text
+        assert "什么是“风险最高模型”" in tightest_text
+        assert "最高 p90" in tightest_text
+        assert "风险分最高" in tightest_text
         assert "p90" in tightest_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)

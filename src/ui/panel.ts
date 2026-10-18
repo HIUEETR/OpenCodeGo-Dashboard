@@ -154,6 +154,7 @@ export class Panel {
   private customTo?: HTMLInputElement;
   private syncButton?: HTMLButtonElement;
   private langSelect?: HTMLSelectElement;
+  private closeButton?: HTMLButtonElement;
   private cards?: HTMLElement;
   private overviewModels?: HTMLElement;
   private overviewLegacyNote?: HTMLElement;
@@ -293,7 +294,7 @@ export class Panel {
     const wrapper = node('div');
     wrapper.id = 'ocgo-lens';
     this.fab = button('', 'ocgo-fab');
-    this.fab.setAttribute('aria-label', 'Open performance lens');
+    this.fab.setAttribute('aria-label', t(this.language, 'app.open'));
     this.fab.setAttribute('aria-expanded', 'false');
     this.fab.setAttribute('aria-controls', 'ocgo-lens-panel');
     this.fab.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 23V9m6 14V13m6 10V7m6 16V11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4 27h24" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1.4"/></svg>';
@@ -321,7 +322,7 @@ export class Panel {
     this.workspaceLabel = node('span', 'ocgo-workspace');
     const langSelect = node('select');
     this.langSelect = langSelect;
-    langSelect.setAttribute('aria-label', 'Language');
+    langSelect.setAttribute('aria-label', t(this.language, 'app.language'));
     for (const [value, label] of [['zh', '中文'], ['en', 'English']]) {
       const option = node('option', '', label);
       option.value = value;
@@ -329,8 +330,9 @@ export class Panel {
     }
     langSelect.addEventListener('change', () => this.setLanguage(langSelect.value as Language));
     const close = button('×', 'ocgo-icon-btn');
-    close.setAttribute('aria-label', 'Close');
+    close.setAttribute('aria-label', t(this.language, 'app.close'));
     close.addEventListener('click', () => this.setOpen(false));
+    this.closeButton = close;
     header.append(brand, this.workspaceLabel, langSelect, close);
     this.bindDrag(header);
 
@@ -1183,7 +1185,11 @@ export class Panel {
     this.chartZoomOut?.setAttribute('aria-label', t(this.language, 'chart.zoomOut'));
     this.chartZoomIn?.setAttribute('aria-label', t(this.language, 'chart.zoomIn'));
     this.chartZoomValue?.setAttribute('aria-label', t(this.language, 'chart.zoomReset'));
-    if (this.langSelect) this.langSelect.value = this.language;
+    if (this.langSelect) {
+      this.langSelect.value = this.language;
+      this.langSelect.setAttribute('aria-label', t(this.language, 'app.language'));
+    }
+    this.closeButton?.setAttribute('aria-label', t(this.language, 'app.close'));
     if (this.rangeSelect) this.rangeSelect.value = this.rangePreset;
     if (this.syncButton) {
       this.syncButton.textContent = this.busy ? t(this.language, 'status.stop') : t(this.language, 'status.syncNow');
@@ -1195,7 +1201,7 @@ export class Panel {
     if (this.forecastTab) this.forecastTab.hidden = !this.experimentalForecast;
     const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
     if (this.workspaceLabel) {
-      this.workspaceLabel.textContent = workspace?.name || this.workspaceID || t(this.language, 'error.workspace');
+      this.workspaceLabel.textContent = workspace?.name || this.workspaceID || t(this.language, 'app.noWorkspace');
       this.workspaceLabel.title = this.workspaceID || '';
     }
     this.setTab(this.activeTab);
@@ -1308,11 +1314,11 @@ export class Panel {
     const success = formatPercent(summary.successRate);
     const failures = t(this.language, 'metric.failures', { n: summary.failed });
     const tpsValue = summary.tpsAvg === null || summary.tpsSlowest === null
-      ? 'N/A'
-      : `${summary.tpsAvg.toFixed(1)} / ${summary.tpsSlowest.toFixed(1)} tok/s`;
+      ? t(this.language, 'common.notAvailable')
+      : `${summary.tpsAvg.toFixed(1)} / ${summary.tpsSlowest.toFixed(1)} ${t(this.language, 'metric.tpsUnit')}`;
     const cards = [
       card(t(this.language, 'metric.requests'), formatNumber(summary.requests), `${t(this.language, 'metric.successRate')} ${success} · ${failures}`),
-      card(t(this.language, 'metric.cost'), formatUsd(summary.costUsd), summary.requests ? `≈ ${formatUsd(summary.costUsd / summary.requests)} / request` : '—'),
+      card(t(this.language, 'metric.cost'), formatUsd(summary.costUsd), summary.requests ? t(this.language, 'metric.costPerRequest', { value: formatUsd(summary.costUsd / summary.requests) }) : '—'),
       card(t(this.language, 'metric.input'), formatCompact(summary.inputTokens), undefined, 'blue'),
       card(t(this.language, 'metric.output'), formatCompact(summary.outputTokens)),
       card(t(this.language, 'metric.ttft'), `${formatMs(summary.ttftAvg)} / ${formatMs(summary.ttftSlowest)}`, t(this.language, 'metric.samples', { n: summary.ttftSamples }), 'blue'),
@@ -1402,7 +1408,7 @@ export class Panel {
         value: formatCompact(rate.value),
         unit: t(this.language, rate.unit === 'h' ? 'chart.unitHour' : 'chart.unitDay'),
       })
-      : t(this.language, 'chart.avgCache', { value: 'N/A' });
+      : t(this.language, 'chart.avgCache', { value: t(this.language, 'common.notAvailable') });
     const summary = this.analysis.summary;
     const cacheAverage = averageBucketMetric(buckets, (bucket) => bucket.cacheHitRate);
     const text = new Map<string, string>([
@@ -1565,7 +1571,7 @@ export class Panel {
       for (const record of pageRecords) {
         const row = node('tr');
         const status = node('td', 'left');
-        status.appendChild(node('span', `ocgo-pill ${record.outcome}`, record.outcome));
+        status.appendChild(node('span', `ocgo-pill ${record.outcome}`, t(this.language, `badge.${record.outcome}`)));
         if (record.legacy) {
           const legacy = node('span', 'ocgo-pill legacy', t(this.language, 'badge.legacy'));
           legacy.style.marginLeft = '4px';
