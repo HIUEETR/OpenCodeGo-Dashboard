@@ -729,7 +729,15 @@ def test_forecast_beta_toggle():
         tooltip.wait_for(state="visible", timeout=5000)
         tooltip_text = tooltip.inner_text()
         assert "预计（p50）" in tooltip_text
-        assert "百分比表示" in tooltip_text
+        assert "到 5 小时重置时预计累计消耗" in tooltip_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
+        cards.locator('.ocgo-card-value').nth(1).hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        tooltip_24h = tooltip.inner_text()
+        assert "未来 24 小时内" in tooltip_24h
+        assert "本月累计" in tooltip_24h
+        assert "预测终点" in tooltip_24h
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
         page.locator('[data-view="forecast"] .ocgo-info-btn').hover()

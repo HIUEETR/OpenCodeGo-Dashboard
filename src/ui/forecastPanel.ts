@@ -417,11 +417,7 @@ export class ForecastPanel {
           if (point.p90Usd !== null) rows.push([t(this.language, 'forecast.chartP90'), this.chartValue(point.p90Usd, window)]);
           rows.push([t(this.language, 'forecast.absoluteLabel'), formatUsd(point.p50Usd)]);
         }
-        const footer = window.limitUsd === null
-          ? t(this.language, 'forecast.unlimited')
-          : window.key === 'next24h'
-            ? t(this.language, 'forecast.tooltip24hMeaning')
-            : t(this.language, 'forecast.tooltipPercentMeaning');
+        const footer = this.chartExplanation(model, window, point);
         showDataTooltip(
           this.tooltip,
           `${model.displayName} · ${windowLabel(this.language, window.key)} · ${formatDateTime(point.at)}`,
@@ -546,15 +542,14 @@ export class ForecastPanel {
         rows.push([t(this.language, 'forecast.p90Label'), percentOrUnknown(window.p90Ratio)]);
         rows.push([t(this.language, 'forecast.absoluteLabel'), `${formatUsd(window.p50Usd)} / ${formatUsd(window.limitUsd)}`]);
       }
-      if (window.resetsAt !== undefined) rows.push([t(this.language, 'forecast.resetLabel'), formatDateTime(window.resetsAt)]);
+      if (window.resetsAt !== undefined) {
+        rows.push([
+          t(this.language, window.key === 'next24h' ? 'forecast.forecastEndLabel' : 'forecast.resetLabel'),
+          formatDateTime(window.resetsAt),
+        ]);
+      }
       if (window.hitAt !== undefined) rows.push([t(this.language, 'forecast.hitLabel'), formatDateTime(window.hitAt)]);
-      const footer = !model.limitKnown
-        ? t(this.language, 'forecast.noQuotaData')
-        : model.monthlyLimitUsd === null
-          ? t(this.language, 'forecast.unlimited')
-          : window.key === 'next24h'
-            ? t(this.language, 'forecast.tooltip24hMeaning')
-            : t(this.language, 'forecast.tooltipPercentMeaning');
+      const footer = this.cardExplanation(model, window);
       showDataTooltip(
         this.tooltip,
         `${model.displayName} · ${windowLabel(this.language, window.key)}`,
@@ -602,6 +597,39 @@ export class ForecastPanel {
     button.addEventListener('pointerleave', () => hideChartTooltip(this.tooltip));
     button.addEventListener('focus', showAtButton);
     button.addEventListener('blur', () => hideChartTooltip(this.tooltip));
+  }
+
+
+  private cardExplanation(model: ModelQuotaForecast, window: ForecastWindowForecast): string {
+    if (!model.limitKnown) return t(this.language, 'forecast.noQuotaData');
+    if (model.monthlyLimitUsd === null || window.p50Ratio === null) return t(this.language, 'forecast.unlimited');
+    if (window.key === 'fiveHour') return t(this.language, 'forecast.explainFiveHour', { value: formatPercent(window.p50Ratio) });
+    if (window.key === 'week') return t(this.language, 'forecast.explainWeek', { value: formatPercent(window.p50Ratio) });
+    if (window.key === 'month') return t(this.language, 'forecast.explainMonth', { value: formatPercent(window.p50Ratio) });
+    const monthUsed = model.windows.month.usedRatio ?? 0;
+    return t(this.language, 'forecast.explain24h', {
+      value: formatPercent(window.p50Ratio),
+      arrival: formatPercent(monthUsed + window.p50Ratio),
+    });
+  }
+
+  private chartExplanation(model: ModelQuotaForecast, window: ForecastWindowForecast, point: ForecastChartPoint): string {
+    if (!model.limitKnown || window.limitUsd === null || window.limitUsd <= 0) {
+      return !model.limitKnown ? t(this.language, 'forecast.noQuotaData') : t(this.language, 'forecast.unlimited');
+    }
+    if (point.actualUsd !== null) {
+      return t(this.language, 'forecast.explainHistory', { value: formatPercent(point.actualUsd / window.limitUsd) });
+    }
+    if (point.p50Usd === null) return t(this.language, 'forecast.noQuotaData');
+    const ratio = point.p50Usd / window.limitUsd;
+    if (window.key === 'next24h') {
+      const monthUsed = model.windows.month.usedRatio ?? 0;
+      return t(this.language, 'forecast.explain24hToPoint', {
+        value: formatPercent(ratio),
+        arrival: formatPercent(monthUsed + ratio),
+      });
+    }
+    return t(this.language, 'forecast.explainPoint', { value: formatPercent(ratio) });
   }
 
   private renderFooter(result: QuotaForecastResult, model: ModelQuotaForecast): HTMLElement {

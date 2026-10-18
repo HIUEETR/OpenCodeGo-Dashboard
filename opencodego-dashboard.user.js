@@ -615,8 +615,16 @@
     "forecast.p90Label": "风险上界（p90）",
     "forecast.absoluteLabel": "绝对额度",
     "forecast.resetLabel": "重置时间",
+    "forecast.forecastEndLabel": "预测终点",
     "forecast.hitLabel": "预计触顶时间",
     "forecast.tooltipPercentMeaning": "百分比表示当前窗口的已用或预计消耗占该窗口额度的比例。",
+    "forecast.explainFiveHour": "到 5 小时重置时预计累计消耗 {value}",
+    "forecast.explainWeek": "到周重置时预计累计消耗 {value}",
+    "forecast.explainMonth": "到月重置时预计累计消耗 {value}",
+    "forecast.explain24h": "从现在的未来 24 小时内，预计新增消耗占月额度的 {value}；届时本月累计约 {arrival}",
+    "forecast.explainHistory": "该时间点已累计消耗 {value}",
+    "forecast.explainPoint": "该时间点预计累计消耗 {value}",
+    "forecast.explain24hToPoint": "从预测起点到该时间点，预计新增消耗占月额度的 {value}；届时本月累计约 {arrival}",
     "forecast.tooltip24hMeaning": "百分比表示未来 24 小时预测消耗占月额度的比例。",
     "forecast.info": "预测说明",
     "forecast.infoHead": "如何阅读额度预测",
@@ -900,8 +908,16 @@
     "forecast.p90Label": "Risk upper bound (p90)",
     "forecast.absoluteLabel": "Absolute quota",
     "forecast.resetLabel": "Reset time",
+    "forecast.forecastEndLabel": "Forecast end",
     "forecast.hitLabel": "Projected hit time",
     "forecast.tooltipPercentMeaning": "The percentage is current or projected usage divided by this window's quota.",
+    "forecast.explainFiveHour": "Projected cumulative usage by the 5-hour reset: {value}",
+    "forecast.explainWeek": "Projected cumulative usage by the weekly reset: {value}",
+    "forecast.explainMonth": "Projected cumulative usage by the monthly reset: {value}",
+    "forecast.explain24h": "Over the next 24 hours, projected new usage is {value} of the monthly quota; monthly usage would reach about {arrival}",
+    "forecast.explainHistory": "Cumulative usage at this time: {value}",
+    "forecast.explainPoint": "Projected cumulative usage at this time: {value}",
+    "forecast.explain24hToPoint": "From the forecast start to this time, projected new usage is {value} of the monthly quota; monthly usage would reach about {arrival}",
     "forecast.tooltip24hMeaning": "The percentage is projected spend over the next 24 hours divided by the monthly quota.",
     "forecast.info": "Forecast help",
     "forecast.infoHead": "How to read the quota forecast",
@@ -3182,7 +3198,7 @@
             if (point.p90Usd !== null) rows.push([t(this.language, "forecast.chartP90"), this.chartValue(point.p90Usd, window2)]);
             rows.push([t(this.language, "forecast.absoluteLabel"), formatUsd(point.p50Usd)]);
           }
-          const footer = window2.limitUsd === null ? t(this.language, "forecast.unlimited") : window2.key === "next24h" ? t(this.language, "forecast.tooltip24hMeaning") : t(this.language, "forecast.tooltipPercentMeaning");
+          const footer = this.chartExplanation(model, window2, point);
           showDataTooltip(
             this.tooltip,
             `${model.displayName} · ${windowLabel(this.language, window2.key)} · ${formatDateTime(point.at)}`,
@@ -3299,9 +3315,14 @@
           rows.push([t(this.language, "forecast.p90Label"), percentOrUnknown(window2.p90Ratio)]);
           rows.push([t(this.language, "forecast.absoluteLabel"), `${formatUsd(window2.p50Usd)} / ${formatUsd(window2.limitUsd)}`]);
         }
-        if (window2.resetsAt !== void 0) rows.push([t(this.language, "forecast.resetLabel"), formatDateTime(window2.resetsAt)]);
+        if (window2.resetsAt !== void 0) {
+          rows.push([
+            t(this.language, window2.key === "next24h" ? "forecast.forecastEndLabel" : "forecast.resetLabel"),
+            formatDateTime(window2.resetsAt)
+          ]);
+        }
         if (window2.hitAt !== void 0) rows.push([t(this.language, "forecast.hitLabel"), formatDateTime(window2.hitAt)]);
-        const footer = !model.limitKnown ? t(this.language, "forecast.noQuotaData") : model.monthlyLimitUsd === null ? t(this.language, "forecast.unlimited") : window2.key === "next24h" ? t(this.language, "forecast.tooltip24hMeaning") : t(this.language, "forecast.tooltipPercentMeaning");
+        const footer = this.cardExplanation(model, window2);
         showDataTooltip(
           this.tooltip,
           `${model.displayName} · ${windowLabel(this.language, window2.key)}`,
@@ -3348,6 +3369,36 @@
       button2.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
       button2.addEventListener("focus", showAtButton);
       button2.addEventListener("blur", () => hideChartTooltip(this.tooltip));
+    }
+    cardExplanation(model, window2) {
+      if (!model.limitKnown) return t(this.language, "forecast.noQuotaData");
+      if (model.monthlyLimitUsd === null || window2.p50Ratio === null) return t(this.language, "forecast.unlimited");
+      if (window2.key === "fiveHour") return t(this.language, "forecast.explainFiveHour", { value: formatPercent(window2.p50Ratio) });
+      if (window2.key === "week") return t(this.language, "forecast.explainWeek", { value: formatPercent(window2.p50Ratio) });
+      if (window2.key === "month") return t(this.language, "forecast.explainMonth", { value: formatPercent(window2.p50Ratio) });
+      const monthUsed = model.windows.month.usedRatio ?? 0;
+      return t(this.language, "forecast.explain24h", {
+        value: formatPercent(window2.p50Ratio),
+        arrival: formatPercent(monthUsed + window2.p50Ratio)
+      });
+    }
+    chartExplanation(model, window2, point) {
+      if (!model.limitKnown || window2.limitUsd === null || window2.limitUsd <= 0) {
+        return !model.limitKnown ? t(this.language, "forecast.noQuotaData") : t(this.language, "forecast.unlimited");
+      }
+      if (point.actualUsd !== null) {
+        return t(this.language, "forecast.explainHistory", { value: formatPercent(point.actualUsd / window2.limitUsd) });
+      }
+      if (point.p50Usd === null) return t(this.language, "forecast.noQuotaData");
+      const ratio = point.p50Usd / window2.limitUsd;
+      if (window2.key === "next24h") {
+        const monthUsed = model.windows.month.usedRatio ?? 0;
+        return t(this.language, "forecast.explain24hToPoint", {
+          value: formatPercent(ratio),
+          arrival: formatPercent(monthUsed + ratio)
+        });
+      }
+      return t(this.language, "forecast.explainPoint", { value: formatPercent(ratio) });
     }
     renderFooter(result, model) {
       const footer = node("div", "ocgo-forecast-footer");
