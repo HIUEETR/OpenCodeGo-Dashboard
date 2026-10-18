@@ -271,7 +271,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-row.ocgo-active td { background: rgba(118,152,253,.075); }
 .ocgo-forecast-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ocgo-forecast-model { color: var(--fg); font-weight: 600; }
-.ocgo-forecast-table td:nth-child(2), .ocgo-forecast-table td:nth-child(3), .ocgo-forecast-table td:nth-child(4), .ocgo-forecast-table td:nth-child(5), .ocgo-forecast-table td:nth-child(6) { font-variant-numeric: tabular-nums; }
+.ocgo-forecast-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; }
 .ocgo-forecast-state { border: 1px dashed var(--line); border-radius: 10px; padding: 26px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); }
 .ocgo-forecast-footer { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .ocgo-forecast-footer .ocgo-warning { flex-basis: 100%; }

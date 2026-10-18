@@ -712,6 +712,8 @@ def test_forecast_beta_toggle():
         toggle.check()
         assert forecast_tab.is_visible()
         assert "Beta" in forecast_tab.inner_text()
+        tab_order = page.locator('[data-tab]').evaluate_all("elements => elements.map(element => element.dataset.tab)")
+        assert tab_order == ["overview", "charts", "forecast", "requests", "data"]
         assert not status_seen, status_seen
 
         page.locator('[data-tab="overview"]').click()
@@ -736,9 +738,12 @@ def test_forecast_beta_toggle():
         ]
         assert status_seen and "x-org-id" in status_seen[0]["headers"]
         assert status_seen[0]["headers"]["x-org-id"] == WORKSPACE
+        headers = page.locator('[data-view="forecast"] .ocgo-forecast-table thead th').all_inner_texts()
+        assert headers == ["模型", "月额度", "5H 已用/上限", "周已用/上限", "本月已用/月额度"]
         rows = page.locator('[data-view="forecast"] .ocgo-forecast-table tbody tr')
         assert rows.count() == 1, rows.all_inner_texts()
         deepseek = page.locator('[data-view="forecast"] tr[data-model="deepseek-v4.1-flash"]')
+        assert deepseek.locator("td").count() == 5
         assert "$80.00" in deepseek.locator("td").nth(1).inner_text()
         assert "$16.00" in (deepseek.locator("td").nth(2).get_attribute("title") or "")
         assert "$40.00" in (deepseek.locator("td").nth(3).get_attribute("title") or "")

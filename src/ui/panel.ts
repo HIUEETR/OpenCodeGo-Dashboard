@@ -428,7 +428,7 @@ export class Panel {
     });
 
     const tabs = node('nav', 'ocgo-tabs');
-    const tabKeys: TabKey[] = ['overview', 'charts', 'requests', 'forecast', 'data'];
+    const tabKeys: TabKey[] = ['overview', 'charts', 'forecast', 'requests', 'data'];
     for (const key of tabKeys) {
       const tab = button('', 'ocgo-tab');
       tab.appendChild(this.textFor(`tabs.${key}`));
@@ -460,7 +460,7 @@ export class Panel {
     this.views.set('requests', requests);
     this.views.set('forecast', forecast);
     this.views.set('data', data);
-    body.append(overview, charts, requests, forecast, data);
+    body.append(overview, charts, forecast, requests, data);
 
     const directions = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as const;
     const handles = directions.map((direction) => {

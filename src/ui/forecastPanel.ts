@@ -498,9 +498,6 @@ export class ForecastPanel {
       ['forecast.table.fiveHour', ''],
       ['forecast.table.week', ''],
       ['forecast.table.month', ''],
-      ['forecast.table.next24h', ''],
-      ['forecast.table.weekRemaining', ''],
-      ['forecast.table.monthRemaining', ''],
     ] as const;
     for (const [key, align] of columns) headerRow.appendChild(node('th', align, t(this.language, key)));
     thead.appendChild(headerRow);
@@ -531,12 +528,6 @@ export class ForecastPanel {
       row.appendChild(this.windowTableCell(model, 'fiveHour', true));
       row.appendChild(this.windowTableCell(model, 'week', true));
       row.appendChild(this.windowTableCell(model, 'month', true));
-      row.appendChild(this.windowTableCell(model, 'next24h', false));
-      const weekRemaining = node('td', '', model.windows.week.remainingRatio === null ? '—' : formatPercent(model.windows.week.remainingRatio));
-      this.bindValueTooltip(weekRemaining, model, model.windows.week);
-      const monthRemaining = node('td', '', model.windows.month.remainingRatio === null ? '—' : formatPercent(model.windows.month.remainingRatio));
-      this.bindValueTooltip(monthRemaining, model, model.windows.month);
-      row.append(weekRemaining, monthRemaining);
       body.appendChild(row);
     }
     table.append(thead, body);

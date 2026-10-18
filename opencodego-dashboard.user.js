@@ -3315,10 +3315,7 @@
         ["forecast.table.monthlyLimit", ""],
         ["forecast.table.fiveHour", ""],
         ["forecast.table.week", ""],
-        ["forecast.table.month", ""],
-        ["forecast.table.next24h", ""],
-        ["forecast.table.weekRemaining", ""],
-        ["forecast.table.monthRemaining", ""]
+        ["forecast.table.month", ""]
       ];
       for (const [key, align] of columns) headerRow.appendChild(node("th", align, t(this.language, key)));
       thead.appendChild(headerRow);
@@ -3345,12 +3342,6 @@
         row.appendChild(this.windowTableCell(model, "fiveHour", true));
         row.appendChild(this.windowTableCell(model, "week", true));
         row.appendChild(this.windowTableCell(model, "month", true));
-        row.appendChild(this.windowTableCell(model, "next24h", false));
-        const weekRemaining = node("td", "", model.windows.week.remainingRatio === null ? "—" : formatPercent(model.windows.week.remainingRatio));
-        this.bindValueTooltip(weekRemaining, model, model.windows.week);
-        const monthRemaining = node("td", "", model.windows.month.remainingRatio === null ? "—" : formatPercent(model.windows.month.remainingRatio));
-        this.bindValueTooltip(monthRemaining, model, model.windows.month);
-        row.append(weekRemaining, monthRemaining);
         body.appendChild(row);
       }
       table.append(thead, body);
@@ -3796,7 +3787,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-row.ocgo-active td { background: rgba(118,152,253,.075); }
 .ocgo-forecast-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ocgo-forecast-model { color: var(--fg); font-weight: 600; }
-.ocgo-forecast-table td:nth-child(2), .ocgo-forecast-table td:nth-child(3), .ocgo-forecast-table td:nth-child(4), .ocgo-forecast-table td:nth-child(5), .ocgo-forecast-table td:nth-child(6) { font-variant-numeric: tabular-nums; }
+.ocgo-forecast-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; }
 .ocgo-forecast-state { border: 1px dashed var(--line); border-radius: 10px; padding: 26px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); }
 .ocgo-forecast-footer { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .ocgo-forecast-footer .ocgo-warning { flex-basis: 100%; }
@@ -4142,7 +4133,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.render();
       });
       const tabs = node2("nav", "ocgo-tabs");
-      const tabKeys = ["overview", "charts", "requests", "forecast", "data"];
+      const tabKeys = ["overview", "charts", "forecast", "requests", "data"];
       for (const key of tabKeys) {
         const tab = button("", "ocgo-tab");
         tab.appendChild(this.textFor(`tabs.${key}`));
@@ -4171,7 +4162,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.views.set("requests", requests);
       this.views.set("forecast", forecast);
       this.views.set("data", data);
-      body.append(overview, charts, requests, forecast, data);
+      body.append(overview, charts, forecast, requests, data);
       const directions = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
       const handles = directions.map((direction) => {
         const handle = node2("div", `ocgo-resize-handle ocgo-resize-${direction}`);
