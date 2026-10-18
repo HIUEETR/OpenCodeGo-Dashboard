@@ -467,6 +467,7 @@ export class Panel {
     panel.append(header, toolbar, tabs, status, this.errorBox, body, ...handles);
     this.chartTooltip = node('div', 'ocgo-chart-tooltip ocgo-hidden');
     this.chartTooltip.setAttribute('role', 'tooltip');
+    this.forecastPanel?.setTooltip(this.chartTooltip);
     this.toast = node('div', 'ocgo-toast ocgo-hidden');
     this.toast.setAttribute('role', 'status');
     this.toast.setAttribute('aria-live', 'polite');
@@ -566,7 +567,7 @@ export class Panel {
     view.dataset.view = 'forecast';
     const host = node('div', 'ocgo-forecast-view');
     this.forecastHost = host;
-    this.forecastPanel = new ForecastPanel(host);
+    this.forecastPanel = new ForecastPanel(host, this.panel ?? host);
     view.appendChild(host);
     return view;
   }
@@ -1052,7 +1053,7 @@ export class Panel {
       return;
     }
     if (!this.forecastResult.models.length) {
-      this.forecastPanel.renderEmpty(this.language, t(this.language, 'forecast.noModels'), t(this.language, 'forecast.emptyHint'));
+      this.forecastPanel.renderEmpty(this.language, t(this.language, 'forecast.noConsumedModels'), t(this.language, 'forecast.emptyHint'));
       return;
     }
     this.forecastPanel.render(

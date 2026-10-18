@@ -605,6 +605,26 @@
     "forecast.percentOfWindow": "占窗口额度 {value}",
     "forecast.modelSelect": "选择预测模型",
     "forecast.noModels": "没有可用于预测的 Go 模型",
+    "forecast.noConsumedModels": "当前没有产生额度消耗的模型",
+    "forecast.usedLabel": "已用",
+    "forecast.projectedLabel": "预计（p50）",
+    "forecast.p90Label": "风险上界（p90）",
+    "forecast.absoluteLabel": "绝对额度",
+    "forecast.resetLabel": "重置时间",
+    "forecast.hitLabel": "预计触顶时间",
+    "forecast.tooltipPercentMeaning": "百分比表示当前窗口的已用或预计消耗占该窗口额度的比例。",
+    "forecast.tooltip24hMeaning": "百分比表示未来 24 小时预测消耗占月额度的比例。",
+    "forecast.info": "预测说明",
+    "forecast.infoHead": "如何阅读额度预测",
+    "forecast.infoHistory": "历史实线",
+    "forecast.infoHistoryDesc": "窗口内已经发生的累计额度消耗",
+    "forecast.infoForecast": "预测虚线",
+    "forecast.infoForecastDesc": "p50 中位预测，即最常见的预计消耗",
+    "forecast.infoBand": "置信区间",
+    "forecast.infoBandDesc": "p10–p90 阴影表示预测的不确定范围",
+    "forecast.infoMethod": "预测方法",
+    "forecast.infoMethodDesc": "短期使用 15/60 分钟 EWMA，并叠加同星期时段周期和受限趋势",
+    "forecast.infoFooter": "24h 使用月额度作为分母；预测仅供估算，不改变官方额度。",
     "log.forecastUpdated": "额度预测已更新：{n} 个模型",
     "log.forecastFailed": "额度预测失败：{error}",
     "log.goStatusFailed": "Go 状态读取失败：{error}",
@@ -866,6 +886,26 @@
     "forecast.percentOfWindow": "{value} of window quota",
     "forecast.modelSelect": "Select forecast model",
     "forecast.noModels": "No Go models are available for forecasting",
+    "forecast.noConsumedModels": "No models have consumed quota yet",
+    "forecast.usedLabel": "Used",
+    "forecast.projectedLabel": "Projected (p50)",
+    "forecast.p90Label": "Risk upper bound (p90)",
+    "forecast.absoluteLabel": "Absolute quota",
+    "forecast.resetLabel": "Reset time",
+    "forecast.hitLabel": "Projected hit time",
+    "forecast.tooltipPercentMeaning": "The percentage is current or projected usage divided by this window's quota.",
+    "forecast.tooltip24hMeaning": "The percentage is projected spend over the next 24 hours divided by the monthly quota.",
+    "forecast.info": "Forecast help",
+    "forecast.infoHead": "How to read the quota forecast",
+    "forecast.infoHistory": "Historical line",
+    "forecast.infoHistoryDesc": "Cumulative quota usage that has already occurred in this window",
+    "forecast.infoForecast": "Forecast line",
+    "forecast.infoForecastDesc": "Median p50 projection for the rest of the window",
+    "forecast.infoBand": "Confidence band",
+    "forecast.infoBandDesc": "The p10–p90 shaded range shows forecast uncertainty",
+    "forecast.infoMethod": "Method",
+    "forecast.infoMethodDesc": "Short-term 15/60 minute EWMA with weekday-hour seasonality and a capped trend",
+    "forecast.infoFooter": "The 24h view uses the monthly quota as its denominator. Forecasts are estimates and never change official quota.",
     "log.forecastUpdated": "Quota forecast updated for {n} model(s)",
     "log.forecastFailed": "Quota forecast failed: {error}",
     "log.goStatusFailed": "Go status lookup failed: {error}",
@@ -2360,6 +2400,8 @@
     const models = [];
     for (const group of groups.values()) {
       group.events.sort((a, b) => a.at - b.at);
+      const consumedUsd = group.events.reduce((sum, event) => sum + event.usd, 0);
+      if (consumedUsd <= 0) continue;
       const confidence = assessConfidence(
         group.records,
         options.status,
@@ -2937,19 +2979,27 @@
   }
   var ForecastPanel = class {
     root;
+    panel;
+    tooltip;
     windowKey = "fiveHour";
     result;
     selectedModel = "";
     language = "en";
     onSelectModel;
     onRetry;
-    constructor(root) {
+    constructor(root, panel2) {
       this.root = root;
+      this.panel = panel2;
+    }
+    setTooltip(tooltip) {
+      this.tooltip = tooltip;
     }
     renderLoading(language) {
+      hideChartTooltip(this.tooltip);
       this.root.replaceChildren(this.state(t(language, "forecast.loading"), "ocgo-note"));
     }
     renderError(language, message, onRetry) {
+      hideChartTooltip(this.tooltip);
       this.root.replaceChildren();
       const box = node("div", "ocgo-forecast-state");
       box.append(node("div", "ocgo-section-title", t(language, "forecast.error", { error: message })));
@@ -2960,6 +3010,7 @@
       this.root.appendChild(box);
     }
     renderEmpty(language, title = t(language, "forecast.empty"), hint = t(language, "forecast.emptyHint")) {
+      hideChartTooltip(this.tooltip);
       this.root.replaceChildren();
       const box = node("div", "ocgo-forecast-state");
       box.append(node("div", "ocgo-section-title", title), node("div", "ocgo-note", hint));
@@ -2971,6 +3022,7 @@
       this.language = language;
       this.onSelectModel = onSelectModel;
       this.onRetry = onRetry;
+      hideChartTooltip(this.tooltip);
       this.root.replaceChildren();
       if (!result.models.length) {
         this.renderEmpty(language);
@@ -3022,6 +3074,7 @@
         const ratio = key === "next24h" ? window2.p50Ratio : window2.p50Ratio;
         const main = !model.limitKnown ? t(this.language, "forecast.unknown") : model.monthlyLimitUsd === null ? t(this.language, "forecast.unlimited") : percentOrUnknown(ratio);
         const value = node("div", "ocgo-card-value", main);
+        this.bindValueTooltip(value, model, window2);
         if (window2.p90Ratio !== null && window2.p90Ratio >= 1) value.classList.add("ocgo-danger-text");
         const sub = node("div", "ocgo-card-sub");
         if (!model.limitKnown) {
@@ -3043,7 +3096,15 @@
     renderChartSection(result, model) {
       const section = node("section", "ocgo-section ocgo-forecast-chart-section");
       const head = node("div", "ocgo-section-head");
-      head.appendChild(node("span", "", t(this.language, "forecast.chartTitle")));
+      const titleGroup = node("div", "ocgo-forecast-chart-title");
+      titleGroup.appendChild(node("span", "", t(this.language, "forecast.chartTitle")));
+      const info = node("button", "ocgo-info-btn", "i");
+      info.type = "button";
+      info.title = t(this.language, "forecast.info");
+      info.setAttribute("aria-label", t(this.language, "forecast.info"));
+      this.bindInfoTooltip(info);
+      titleGroup.appendChild(info);
+      head.appendChild(titleGroup);
       const controls = node("div", "ocgo-forecast-window-controls");
       for (const key of WINDOW_KEYS) {
         const button2 = node("button", `ocgo-btn ocgo-forecast-window-btn${key === this.windowKey ? " ocgo-active" : ""}`, windowLabel(this.language, key));
@@ -3103,8 +3164,11 @@
         row.appendChild(this.windowTableCell(model, "week", true));
         row.appendChild(this.windowTableCell(model, "month", true));
         row.appendChild(this.windowTableCell(model, "next24h", false));
-        row.appendChild(node("td", "", model.windows.week.remainingRatio === null ? "—" : formatPercent(model.windows.week.remainingRatio)));
-        row.appendChild(node("td", "", model.windows.month.remainingRatio === null ? "—" : formatPercent(model.windows.month.remainingRatio)));
+        const weekRemaining = node("td", "", model.windows.week.remainingRatio === null ? "—" : formatPercent(model.windows.week.remainingRatio));
+        this.bindValueTooltip(weekRemaining, model, model.windows.week);
+        const monthRemaining = node("td", "", model.windows.month.remainingRatio === null ? "—" : formatPercent(model.windows.month.remainingRatio));
+        this.bindValueTooltip(monthRemaining, model, model.windows.month);
+        row.append(weekRemaining, monthRemaining);
         body.appendChild(row);
       }
       table.append(thead, body);
@@ -3123,7 +3187,75 @@
         cell.textContent = percentOrUnknown(used ? window2.usedRatio : window2.p50Ratio);
       }
       cell.title = `${quantileTitle(window2, this.language)} · ${absoluteWindow(window2)}`;
+      this.bindValueTooltip(cell, model, window2);
       return cell;
+    }
+    bindValueTooltip(element, model, window2) {
+      element.classList.add("ocgo-forecast-percent");
+      element.tabIndex = 0;
+      const show = (clientX, clientY) => {
+        if (!this.tooltip) return;
+        const rows = [];
+        if (!model.limitKnown) {
+          rows.push([t(this.language, "forecast.absolute"), t(this.language, "forecast.noQuotaData")]);
+        } else if (model.monthlyLimitUsd === null) {
+          rows.push([t(this.language, "forecast.absolute"), t(this.language, "forecast.unlimited")]);
+          rows.push([t(this.language, "forecast.projected"), formatUsd(window2.p50Usd)]);
+        } else {
+          if (window2.key !== "next24h") rows.push([t(this.language, "forecast.usedLabel"), percentOrUnknown(window2.usedRatio)]);
+          rows.push([t(this.language, "forecast.projectedLabel"), percentOrUnknown(window2.p50Ratio)]);
+          rows.push([t(this.language, "forecast.p90Label"), percentOrUnknown(window2.p90Ratio)]);
+          rows.push([t(this.language, "forecast.absoluteLabel"), `${formatUsd(window2.p50Usd)} / ${formatUsd(window2.limitUsd)}`]);
+        }
+        if (window2.resetsAt !== void 0) rows.push([t(this.language, "forecast.resetLabel"), formatDateTime(window2.resetsAt)]);
+        if (window2.hitAt !== void 0) rows.push([t(this.language, "forecast.hitLabel"), formatDateTime(window2.hitAt)]);
+        const footer = !model.limitKnown ? t(this.language, "forecast.noQuotaData") : model.monthlyLimitUsd === null ? t(this.language, "forecast.unlimited") : window2.key === "next24h" ? t(this.language, "forecast.tooltip24hMeaning") : t(this.language, "forecast.tooltipPercentMeaning");
+        showDataTooltip(
+          this.tooltip,
+          `${model.displayName} · ${windowLabel(this.language, window2.key)}`,
+          rows,
+          this.panel,
+          clientX,
+          clientY,
+          footer
+        );
+      };
+      const showAtElement = () => {
+        const rect = element.getBoundingClientRect();
+        show(rect.right, rect.bottom);
+      };
+      element.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
+      element.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
+      element.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
+      element.addEventListener("focus", showAtElement);
+      element.addEventListener("blur", () => hideChartTooltip(this.tooltip));
+    }
+    bindInfoTooltip(button2) {
+      const show = (clientX, clientY) => {
+        if (!this.tooltip) return;
+        showDataTooltip(
+          this.tooltip,
+          t(this.language, "forecast.infoHead"),
+          [
+            [t(this.language, "forecast.infoHistory"), t(this.language, "forecast.infoHistoryDesc")],
+            [t(this.language, "forecast.infoForecast"), t(this.language, "forecast.infoForecastDesc")],
+            [t(this.language, "forecast.infoBand"), t(this.language, "forecast.infoBandDesc")],
+            [t(this.language, "forecast.infoMethod"), t(this.language, "forecast.infoMethodDesc")]
+          ],
+          this.panel,
+          clientX,
+          clientY,
+          t(this.language, "forecast.infoFooter")
+        );
+      };
+      const showAtButton = () => {
+        const rect = button2.getBoundingClientRect();
+        show(rect.right, rect.bottom);
+      };
+      button2.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
+      button2.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
+      button2.addEventListener("focus", showAtButton);
+      button2.addEventListener("blur", () => hideChartTooltip(this.tooltip));
     }
     renderFooter(result, model) {
       const footer = node("div", "ocgo-forecast-footer");
@@ -3411,6 +3543,12 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-footer .ocgo-warning { flex-basis: 100%; }
 @media (max-width: 980px) { .ocgo-forecast-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .ocgo-forecast-cards { grid-template-columns: 1fr; } .ocgo-forecast-chart { height: 210px; } }
+
+.ocgo-forecast-chart-title { display: flex; align-items: center; gap: 6px; }
+.ocgo-info-btn { width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: rgba(255,255,255,.04); color: var(--muted); font: italic 700 11px/1 Georgia, serif; cursor: help; }
+.ocgo-info-btn:hover, .ocgo-info-btn:focus-visible { color: var(--accent); border-color: rgba(118,152,253,.6); outline: none; }
+.ocgo-forecast-percent { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.ocgo-forecast-percent:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 `;
 
@@ -3776,6 +3914,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       panel2.append(header, toolbar, tabs, status, this.errorBox, body, ...handles);
       this.chartTooltip = node2("div", "ocgo-chart-tooltip ocgo-hidden");
       this.chartTooltip.setAttribute("role", "tooltip");
+      this.forecastPanel?.setTooltip(this.chartTooltip);
       this.toast = node2("div", "ocgo-toast ocgo-hidden");
       this.toast.setAttribute("role", "status");
       this.toast.setAttribute("aria-live", "polite");
@@ -3871,7 +4010,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       view.dataset.view = "forecast";
       const host = node2("div", "ocgo-forecast-view");
       this.forecastHost = host;
-      this.forecastPanel = new ForecastPanel(host);
+      this.forecastPanel = new ForecastPanel(host, this.panel ?? host);
       view.appendChild(host);
       return view;
     }
@@ -4333,7 +4472,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         return;
       }
       if (!this.forecastResult.models.length) {
-        this.forecastPanel.renderEmpty(this.language, t(this.language, "forecast.noModels"), t(this.language, "forecast.emptyHint"));
+        this.forecastPanel.renderEmpty(this.language, t(this.language, "forecast.noConsumedModels"), t(this.language, "forecast.emptyHint"));
         return;
       }
       this.forecastPanel.render(

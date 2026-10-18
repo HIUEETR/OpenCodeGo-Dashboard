@@ -128,6 +128,27 @@ describe('quota forecast', () => {
     expect(model.confidence).not.toBe('high');
   });
 
+  it('hides models whose priced consumption is zero', () => {
+    const result = buildQuotaForecast({
+      records: [record({
+        model: 'gpt-5.6-luna',
+        requestedModel: 'gpt-5.6-luna',
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        cacheWrite1hTokens: 0,
+        costUsd: 0,
+      })],
+      pricing,
+      filters: { model: '', provider: '', userKey: '' },
+      status,
+      now: NOW,
+    });
+    expect(result.models).toEqual([]);
+  });
+
   it('supports free and unlimited quotas without inventing a percentage', () => {
     const result = buildQuotaForecast({
       records: [record({ startedAt: NOW - 30 * 60 * 1000 })],

@@ -450,6 +450,8 @@ export function buildQuotaForecast(options: BuildQuotaForecastOptions): QuotaFor
   const models: ModelQuotaForecast[] = [];
   for (const group of groups.values()) {
     group.events.sort((a, b) => a.at - b.at);
+    const consumedUsd = group.events.reduce((sum, event) => sum + event.usd, 0);
+    if (consumedUsd <= 0) continue;
     const confidence = assessConfidence(
       group.records,
       options.status,

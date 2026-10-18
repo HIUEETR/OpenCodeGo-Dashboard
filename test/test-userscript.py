@@ -724,6 +724,21 @@ def test_forecast_beta_toggle():
         assert "$16.00" in (deepseek.locator("td").nth(2).get_attribute("title") or "")
         assert "$40.00" in (deepseek.locator("td").nth(3).get_attribute("title") or "")
         assert page.locator('[data-view="forecast"] svg.ocgo-forecast-chart').count() == 1
+        tooltip = page.locator('.ocgo-chart-tooltip')
+        cards.locator('.ocgo-card-value').first.hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        tooltip_text = tooltip.inner_text()
+        assert "预计（p50）" in tooltip_text
+        assert "百分比表示" in tooltip_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
+        page.locator('[data-view="forecast"] .ocgo-info-btn').hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        info_text = tooltip.inner_text()
+        assert "如何阅读额度预测" in info_text
+        assert "EWMA" in info_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
         deepseek.click()
         page.wait_for_timeout(100)
         assert page.locator('[data-view="forecast"] .ocgo-forecast-row.ocgo-active').get_attribute("data-model") == "deepseek-v4.1-flash"

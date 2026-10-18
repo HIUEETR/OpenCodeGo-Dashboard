@@ -6,6 +6,7 @@ import type {
   QuotaForecastResult,
 } from '../forecast';
 import { formatDateTime, formatPercent, formatRelative, formatUsd } from '../format';
+import { hideChartTooltip, showDataTooltip } from './charts';
 import { t } from '../i18n';
 import type { Language } from '../types';
 
@@ -193,6 +194,8 @@ function buildChart(
 
 export class ForecastPanel {
   private readonly root: HTMLElement;
+  private readonly panel: HTMLElement;
+  private tooltip?: HTMLElement;
   private windowKey: ForecastWindowKey = 'fiveHour';
   private result?: QuotaForecastResult;
   private selectedModel = '';
@@ -200,15 +203,22 @@ export class ForecastPanel {
   private onSelectModel?: (model: string) => void;
   private onRetry?: () => void;
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, panel: HTMLElement) {
     this.root = root;
+    this.panel = panel;
+  }
+
+  setTooltip(tooltip: HTMLElement): void {
+    this.tooltip = tooltip;
   }
 
   renderLoading(language: Language): void {
+    hideChartTooltip(this.tooltip);
     this.root.replaceChildren(this.state(t(language, 'forecast.loading'), 'ocgo-note'));
   }
 
   renderError(language: Language, message: string, onRetry: () => void): void {
+    hideChartTooltip(this.tooltip);
     this.root.replaceChildren();
     const box = node('div', 'ocgo-forecast-state');
     box.append(node('div', 'ocgo-section-title', t(language, 'forecast.error', { error: message })));
@@ -220,6 +230,7 @@ export class ForecastPanel {
   }
 
   renderEmpty(language: Language, title = t(language, 'forecast.empty'), hint = t(language, 'forecast.emptyHint')): void {
+    hideChartTooltip(this.tooltip);
     this.root.replaceChildren();
     const box = node('div', 'ocgo-forecast-state');
     box.append(node('div', 'ocgo-section-title', title), node('div', 'ocgo-note', hint));
@@ -238,6 +249,7 @@ export class ForecastPanel {
     this.language = language;
     this.onSelectModel = onSelectModel;
     this.onRetry = onRetry;
+    hideChartTooltip(this.tooltip);
     this.root.replaceChildren();
     if (!result.models.length) {
       this.renderEmpty(language);
@@ -296,6 +308,7 @@ export class ForecastPanel {
           ? t(this.language, 'forecast.unlimited')
           : percentOrUnknown(ratio);
       const value = node('div', 'ocgo-card-value', main);
+      this.bindValueTooltip(value, model, window);
       if (window.p90Ratio !== null && window.p90Ratio >= 1) value.classList.add('ocgo-danger-text');
       const sub = node('div', 'ocgo-card-sub');
       if (!model.limitKnown) {
@@ -320,7 +333,15 @@ export class ForecastPanel {
   private renderChartSection(result: QuotaForecastResult, model: ModelQuotaForecast): HTMLElement {
     const section = node('section', 'ocgo-section ocgo-forecast-chart-section');
     const head = node('div', 'ocgo-section-head');
-    head.appendChild(node('span', '', t(this.language, 'forecast.chartTitle')));
+    const titleGroup = node('div', 'ocgo-forecast-chart-title');
+    titleGroup.appendChild(node('span', '', t(this.language, 'forecast.chartTitle')));
+    const info = node('button', 'ocgo-info-btn', 'i');
+    info.type = 'button';
+    info.title = t(this.language, 'forecast.info');
+    info.setAttribute('aria-label', t(this.language, 'forecast.info'));
+    this.bindInfoTooltip(info);
+    titleGroup.appendChild(info);
+    head.appendChild(titleGroup);
     const controls = node('div', 'ocgo-forecast-window-controls');
     for (const key of WINDOW_KEYS) {
       const button = node('button', `ocgo-btn ocgo-forecast-window-btn${key === this.windowKey ? ' ocgo-active' : ''}`, windowLabel(this.language, key));
@@ -385,8 +406,11 @@ export class ForecastPanel {
       row.appendChild(this.windowTableCell(model, 'week', true));
       row.appendChild(this.windowTableCell(model, 'month', true));
       row.appendChild(this.windowTableCell(model, 'next24h', false));
-      row.appendChild(node('td', '', model.windows.week.remainingRatio === null ? '—' : formatPercent(model.windows.week.remainingRatio)));
-      row.appendChild(node('td', '', model.windows.month.remainingRatio === null ? '—' : formatPercent(model.windows.month.remainingRatio)));
+      const weekRemaining = node('td', '', model.windows.week.remainingRatio === null ? '—' : formatPercent(model.windows.week.remainingRatio));
+      this.bindValueTooltip(weekRemaining, model, model.windows.week);
+      const monthRemaining = node('td', '', model.windows.month.remainingRatio === null ? '—' : formatPercent(model.windows.month.remainingRatio));
+      this.bindValueTooltip(monthRemaining, model, model.windows.month);
+      row.append(weekRemaining, monthRemaining);
       body.appendChild(row);
     }
     table.append(thead, body);
@@ -406,7 +430,84 @@ export class ForecastPanel {
       cell.textContent = percentOrUnknown(used ? window.usedRatio : window.p50Ratio);
     }
     cell.title = `${quantileTitle(window, this.language)} · ${absoluteWindow(window)}`;
+    this.bindValueTooltip(cell, model, window);
     return cell;
+  }
+
+
+  private bindValueTooltip(element: HTMLElement, model: ModelQuotaForecast, window: ForecastWindowForecast): void {
+    element.classList.add('ocgo-forecast-percent');
+    element.tabIndex = 0;
+    const show = (clientX: number, clientY: number) => {
+      if (!this.tooltip) return;
+      const rows: Array<[string, string]> = [];
+      if (!model.limitKnown) {
+        rows.push([t(this.language, 'forecast.absolute'), t(this.language, 'forecast.noQuotaData')]);
+      } else if (model.monthlyLimitUsd === null) {
+        rows.push([t(this.language, 'forecast.absolute'), t(this.language, 'forecast.unlimited')]);
+        rows.push([t(this.language, 'forecast.projected'), formatUsd(window.p50Usd)]);
+      } else {
+        if (window.key !== 'next24h') rows.push([t(this.language, 'forecast.usedLabel'), percentOrUnknown(window.usedRatio)]);
+        rows.push([t(this.language, 'forecast.projectedLabel'), percentOrUnknown(window.p50Ratio)]);
+        rows.push([t(this.language, 'forecast.p90Label'), percentOrUnknown(window.p90Ratio)]);
+        rows.push([t(this.language, 'forecast.absoluteLabel'), `${formatUsd(window.p50Usd)} / ${formatUsd(window.limitUsd)}`]);
+      }
+      if (window.resetsAt !== undefined) rows.push([t(this.language, 'forecast.resetLabel'), formatDateTime(window.resetsAt)]);
+      if (window.hitAt !== undefined) rows.push([t(this.language, 'forecast.hitLabel'), formatDateTime(window.hitAt)]);
+      const footer = !model.limitKnown
+        ? t(this.language, 'forecast.noQuotaData')
+        : model.monthlyLimitUsd === null
+          ? t(this.language, 'forecast.unlimited')
+          : window.key === 'next24h'
+            ? t(this.language, 'forecast.tooltip24hMeaning')
+            : t(this.language, 'forecast.tooltipPercentMeaning');
+      showDataTooltip(
+        this.tooltip,
+        `${model.displayName} · ${windowLabel(this.language, window.key)}`,
+        rows,
+        this.panel,
+        clientX,
+        clientY,
+        footer,
+      );
+    };
+    const showAtElement = () => {
+      const rect = element.getBoundingClientRect();
+      show(rect.right, rect.bottom);
+    };
+    element.addEventListener('pointerenter', (event) => show(event.clientX, event.clientY));
+    element.addEventListener('pointermove', (event) => show(event.clientX, event.clientY));
+    element.addEventListener('pointerleave', () => hideChartTooltip(this.tooltip));
+    element.addEventListener('focus', showAtElement);
+    element.addEventListener('blur', () => hideChartTooltip(this.tooltip));
+  }
+
+  private bindInfoTooltip(button: HTMLButtonElement): void {
+    const show = (clientX: number, clientY: number) => {
+      if (!this.tooltip) return;
+      showDataTooltip(
+        this.tooltip,
+        t(this.language, 'forecast.infoHead'),
+        [
+          [t(this.language, 'forecast.infoHistory'), t(this.language, 'forecast.infoHistoryDesc')],
+          [t(this.language, 'forecast.infoForecast'), t(this.language, 'forecast.infoForecastDesc')],
+          [t(this.language, 'forecast.infoBand'), t(this.language, 'forecast.infoBandDesc')],
+          [t(this.language, 'forecast.infoMethod'), t(this.language, 'forecast.infoMethodDesc')],
+        ],
+        this.panel,
+        clientX,
+        clientY,
+        t(this.language, 'forecast.infoFooter'),
+      );
+    };
+    const showAtButton = () => {
+      const rect = button.getBoundingClientRect();
+      show(rect.right, rect.bottom);
+    };
+    button.addEventListener('pointerenter', (event) => show(event.clientX, event.clientY));
+    button.addEventListener('pointerleave', () => hideChartTooltip(this.tooltip));
+    button.addEventListener('focus', showAtButton);
+    button.addEventListener('blur', () => hideChartTooltip(this.tooltip));
   }
 
   private renderFooter(result: QuotaForecastResult, model: ModelQuotaForecast): HTMLElement {
