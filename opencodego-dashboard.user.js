@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OpenCode 性能观测
 // @namespace    opencodego-dashboard
-// @version      1.1.0
+// @version      1.2.0
 // @description  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
 // @match        https://opencode.ai/console/*
@@ -998,8 +998,8 @@
     "metric.cost": "Cost",
     "metric.input": "Input tokens",
     "metric.output": "Output tokens",
-    "metric.cacheRead": "Cache read",
-    "metric.cacheWrite": "Cache write",
+    "metric.cacheRead": "Cached read",
+    "metric.cacheWrite": "Cached write",
     "metric.cacheHitRate": "Cache hit rate",
     "metric.ttft": "TTFT (average / slowest)",
     "metric.tps": "Output TPS (average / slowest)",
@@ -1022,8 +1022,8 @@
     "chart.unitHour": "h",
     "chart.unitDay": "d",
     "chart.input": "Input",
-    "chart.cacheRead": "Cache read",
-    "chart.cacheWrite": "Cache write",
+    "chart.cacheRead": "Cached read",
+    "chart.cacheWrite": "Cached write",
     "chart.output": "Output",
     "chart.average": "Average",
     "chart.slowest": "Slowest",
@@ -1040,8 +1040,8 @@
     "table.tpsAvg": "TPS average",
     "table.tpsSlowest": "TPS slowest",
     "table.input": "Input",
-    "table.cacheRead": "Cache read",
-    "table.cacheWrite": "Cache write",
+    "table.cacheRead": "Cached read",
+    "table.cacheWrite": "Cached write",
     "table.output": "Output",
     "table.reasoning": "Reasoning",
     "table.cost": "Cost",
@@ -1152,8 +1152,8 @@
     "sync.toast.latest": "Already up to date — no new records",
     "tooltip.inputCost": "Input cost",
     "tooltip.outputCost": "Output cost",
-    "tooltip.cacheReadCost": "Cache read cost",
-    "tooltip.cacheWriteCost": "Cache write cost",
+    "tooltip.cacheReadCost": "Cached read cost",
+    "tooltip.cacheWriteCost": "Cached write cost",
     "tooltip.tokensTitle": "{model} · Total tokens",
     "tooltip.costTitle": "{model} · Cost",
     "tooltip.estimated": "Estimate",
@@ -2536,7 +2536,7 @@
   }
 
   // src/version.ts
-  var APP_VERSION = "1.1.0";
+  var APP_VERSION = "1.2.0";
 
   // src/ui/charts.ts
   var SVG_NS = "http://www.w3.org/2000/svg";

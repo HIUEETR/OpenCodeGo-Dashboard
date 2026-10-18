@@ -2,92 +2,124 @@
   <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCode Performance Lens Banner" />
 </p>
 
-# OpenCode Performance Lens (Userscript) v1.1.0
+# OpenCode Performance Lens (Userscript) v1.2.0
 
 **[中文](README.zh-CN.md)** | English
 
-Adds a performance-focused floating dashboard to the [OpenCode Console](https://opencode.ai/console/): cache hit rate, TTFT, output TPS, token mix, cost, and request-level details. The official console remains responsible for account, billing, workspace, and baseline usage views.
+OpenCode Performance Lens adds a floating observability dashboard to [OpenCode Console](https://opencode.ai/console/). It combines request performance, local retention, OpenCode Go pricing, and an optional usage forecast. The official Console remains responsible for account, workspace, billing, and authoritative usage views.
+
+## Screenshots
+
+| Overview | Usage forecast |
+| --- | --- |
+| ![Overview](image/README/overview.en.png) | ![Usage forecast](image/README/usage-forecast.en.png) |
 
 ## Features
 
-- Workspace-wide inference analytics with model, provider, member, and service-account filters.
+- Overview cards for requests, success rate, cost, input/output tokens, TTFT, output TPS, cached read/write, and cache hit rate.
 - Cache hit rate: `cacheRead / (input + cacheRead + cacheWrite + cacheWrite1h)`; missing write buckets count as zero.
-- TTFT from the official `timeToFirstTokenMs` field, shown as the average and the slowest sample.
-- Output TPS measured from the first output token to the last output token. Uses `firstTokenAt` / `lastTokenAt` when available and falls back to TTFT plus request completion time.
-- Charts for token mix, cache hit rate, TTFT average/slowest, output TPS average/slowest, and model performance. Model rows show average TTFT and TPS plus total tokens for the selected range.
-- Unified 50%–200% chart zoom, average/slowest summaries beside performance chart titles, and chart-specific hover details. Chart cards grow with their content instead of showing nested scrollbars.
-- Request table with status, model, provider, TTFT, TPS, input, cache read/write, output, cost, and user, plus deep links to official request details. The panel closes automatically when a detail link is opened.
-- Local IndexedDB archive that keeps compact request metrics beyond the official 30-day log retention window.
-- Overview cards show the TPS unit directly, and cache write gets its own card before cache read when nonzero.
-- Model table total tokens and cost expose hover breakdowns. Cost categories use OpenCode Go documentation prices, normalized to the actual total and cached for three days.
-- The Sync & Data tab shows the cached model pricing, billing periods, and context tiers; model performance tables omit models with zero total tokens.
-- CSV/JSON export, localized diagnostics, remembered panel, launcher, and chart-zoom state.
-- Browser language is detected on first use: Chinese locales use Chinese and all others use English. Manual language choices are remembered.
-- Colors, card layers, overlays, and thin scrollbars match the official OpenCode Console theme.
-- The chart launcher toggles the panel and can be dragged. Clicking outside the panel or pressing `Escape` closes it, and the panel supports eight-direction resizing.
+- TTFT and TPS use only successful streaming requests. TPS also requires output tokens and measures from the first output token to the last output token. Missing timing fields fall back to TTFT and request completion time.
+- Trend charts for token mix, cache hit rate, TTFT average/slowest, output TPS average/slowest, and model performance. Chart zoom and hover details are preserved with the panel state.
+- Request logs with status, model, provider, TTFT, TPS, token columns, cost, and member / service account, plus links to the official Console log detail.
+- Model tables show total tokens and cost, with hover breakdowns. Cost categories use OpenCode Go prices and are normalized to the logged total cost when every request in the model has a matching pricing tier.
+- The Sync & Data tab shows cached model pricing, Peak / Off-Peak periods, context tiers, storage usage, diagnostics, and export controls.
+- Local IndexedDB archive keeps compact request metrics beyond the Console's 30-day log retention window.
+- Optional Beta usage forecast, disabled by default. When enabled, the Overview gains a summary and a Usage forecast tab appears with 5-hour, next-24-hours, weekly, and monthly cards.
+- Usage forecast limits are per model: monthly limit `M`, weekly `M / 2`, and 5-hour `M / 5`. The next 24 hours is a forecast horizon, not a limit window. See the [implementation guide](docs/usage-forecast-implementation.zh-CN.md) and [design notes](docs/usage-forecast-design.zh-CN.md).
+- Chinese or English UI, remembered filters, range, tab, language, forecast toggle, panel geometry, launcher position, and chart zoom.
+- The chart launcher toggles and can be dragged. The header moves the panel, eight edge handles resize it, and `Escape` or an outside click closes it.
 
-For formulas, window rules, worked examples, and code mapping, see the [usage forecast implementation guide](docs/usage-forecast-implementation.zh-CN.md).
+## Data sources and compatibility
 
-## Data source and compatibility
-
-The script uses the current direct HTTP API of OpenCode Console:
+The userscript uses the current same-origin OpenCode Console endpoints:
 
 - `GET /console/api/user/workspaces`
 - `GET /console/api/request-logs?category=inference&since=...&limit=50...`
+- `GET /console/api/usage/users?range=30d&page=...&pageSize=100&costOrder=desc`
+- `GET /console/api/go/status`
+- `GET /v2/docs/console/go/`
 
-The request-log endpoint requires the current workspace in `x-org-id` and relies on the same-origin `opencode.ai` session cookie. The script defaults to `limit=50`, matching the official logs page, then falls back to 25 and 10 if the server changes parameter constraints. If the cursor expires, it restarts once from page one. Session expiry, missing permission, persistent rate limiting, or contract changes stop sync with a visible reason.
+The request-log endpoint requires the current workspace in `x-org-id` and uses the `opencode.ai` session cookie. The script also observes the Console's own same-origin inference request-log responses and saves matching pages that identify a `wrk_` workspace, so opening the official log page can seed local data without a second request.
 
-The API fields used by the script include:
+The script defaults to `limit=50`, matching the official logs page, then tries 25 and 10 if the server rejects the page size. Transient network, rate-limit, and server errors are retried up to four times. An expired cursor restarts once from page one; a repeated cursor stops sync instead of looping.
 
-`startedAt`, `finishedAt`, `durationMs`, `timeToFirstTokenMs`, `firstTokenAt`, `lastTokenAt`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cacheReadTokens`, `cacheWriteTokens`, `cacheWrite1hTokens`, `cost`, `model`, `provider`, `outcome`, and `stream`.
+The request fields used include:
 
-If the console changes these routes or fields, include the diagnostics log in a [GitHub issue](https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues).
+`id`, `requestID`, `workspaceID`, `startedAt`, `finishedAt`, `durationMs`, `timeToFirstTokenMs`, `firstTokenAt`, `lastTokenAt`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cacheReadTokens`, `cacheWriteTokens`, `cacheWrite1hTokens`, `cost`, `model`, `provider`, `outcome`, `stream`, `userID`, and `serviceAccountID`.
+
+If OpenCode changes these routes or fields, include the copied diagnostics log in a [GitHub issue](https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues).
+
+## Sync behavior
+
+- The first sync, an incomplete backfill, or a missing latest record starts a 30-day full sync. “Backfill 30 days” can force it manually.
+- After the panel has been opened, the visible Console tab checks every 10 minutes. A check runs only if the last successful sync is about 9 minutes or older.
+- Auto-sync pauses while the Console tab is hidden. It can continue after the panel is closed because the timer belongs to the Console page.
+- Incremental sync starts from `max(30-day retention start, min(latest local record - 5 minutes, last successful sync - 1 hour))`.
+- Records are deduplicated by `workspaceID:id`. The stable ID prefers the log `id`, then `requestID`, then a synthesized key.
+- Each completed sync shows a compact toast with the added record count or an up-to-date message.
+
+If the Console is not opened for more than 30 days, the missed period cannot be recovered from the official API. The panel reports the history gap.
+
+## Usage forecast
+
+The Beta usage forecast is calculated from the current workspace's full local history, the cached OpenCode Go price document, and the Go usage-limit status. It applies the active model, provider, and member / service account filters.
+
+- Every model's usage is evaluated independently; limits are never summed across models.
+- 5-hour, weekly, and monthly windows use official reset times when available and UTC or trailing-window estimates otherwise.
+- The chart shows historical cumulative usage, the p50 forecast, the p10–p90 prediction interval, the current time, and limit reset markers.
+- The highest-risk model has the largest p90 utilization across the 5-hour, weekly, and monthly windows.
+- Confidence is reduced by missing official status, short history, a sync gap, stale pricing, or more than 5% unpriced requests.
+- Existing forecast cards and charts stay visible during sync. A background refresh uses an `aria-busy` state and replaces the data only when the new result is ready.
+
+The forecast is an estimate and never changes official usage limits.
+
+## Local data
+
+Data stays in the current browser profile's IndexedDB and is not uploaded to third parties. Request and response headers, IP, and location data are not stored.
+
+Legacy `ocgo-cache` records are imported once only for timestamps older than the current 30-day retention window. They have no TTFT/TPS but still contribute to request counts, success counts, token, cache, and cost analytics. Clearing local history also removes the legacy cache and prevents another import.
+
+Use Sync & Data to export the currently filtered range as CSV or the complete workspace archive as JSON, copy diagnostics, or clear local history.
 
 ## Installation
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) or another compatible userscript manager.
 2. Open the [userscript](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js).
-3. Confirm installation in Tampermonkey.
-4. Sign in to `https://opencode.ai/console/` and click the chart launcher. Click it again or click outside the panel to close it; both the launcher and every panel edge can be dragged.
+3. Confirm installation in the userscript manager.
+4. Sign in to `https://opencode.ai/console/` and click the chart launcher.
 
-TypeScript is build-time only. The release artifact remains a single `.user.js` file and needs no browser-extension development setup or cloud service.
-
-## Sync behavior
-
-- The first panel open fetches the last 30 days.
-- Opening the panel immediately checks for incremental updates; incremental sync stops as soon as a page contains only locally cached records.
-- While the panel is visible, each completed sync shows a compact top-center toast with the added record count or an up-to-date message.
-- While the console tab is visible, incremental sync runs every 10 minutes; it pauses when the page is hidden.
-- Incremental sync re-scans at least the last hour, plus five minutes before the latest local record, and deduplicates by request `id` to reduce gaps from long-running or delayed log writes.
-- “Sync now” and “Backfill 30 days” can be triggered manually.
-
-If the console is not opened for more than 30 days, the missed period cannot be recovered from the official API. The panel reports a history gap.
-
-## Local data
-
-Data stays in the current browser profile’s IndexedDB and is not uploaded to third parties. Request and response headers, IP, and location data are not stored. Legacy `ocgo-cache` records are imported once in read-only mode; they have no TTFT/TPS and only contribute to token, cache, and cost analytics.
-
-Use the Sync & Data tab to export filtered CSV, export the full archive as JSON, or clear local history.
+TypeScript is build-time only. The release artifact is a single `.user.js` file and requires no browser-extension development setup or cloud service.
 
 ## Development
+
+Requires Node.js 20 or newer.
 
 ```powershell
 npm install
 python -m pip install -r requirements-test.txt
 python -m playwright install chromium
 npm run build
-npm test
+npm run check
 npm run test:e2e
-npm run typecheck
 ```
 
-- `npm run build`: bundles `src/main.ts` into the root `opencodego-dashboard.user.js`.
+- `npm run build`: bundles `src/main.ts` into `opencodego-dashboard.user.js`.
 - `npm run watch`: rebuilds the userscript on source changes.
-- `npm test`: Vitest unit tests.
-- `npm run test:e2e`: builds and runs Playwright against a local mock of OpenCode Console.
+- `npm test`: runs Vitest unit tests.
+- `npm run test:watch`: runs Vitest in watch mode.
 - `npm run check`: typecheck plus unit tests.
+- `npm run test:e2e`: builds and runs Playwright against the local Console fixture.
+- `npm run capture:readme`: regenerates the four README screenshots from the same fixture.
 
-After a local rebuild, re-import the generated userscript in Tampermonkey or refresh it through the file import flow.
+After a local rebuild, re-import the generated userscript in the userscript manager.
+
+## References
+
+- [Terminology](docs/terminology.zh-CN.md)
+- [Usage forecast design](docs/usage-forecast-design.zh-CN.md)
+- [Usage forecast implementation and calculations](docs/usage-forecast-implementation.zh-CN.md)
+- [OpenCode Console documentation](https://opencode.ai/v2/docs/console/)
+- [OpenCode Go usage limits](https://opencode.ai/v2/docs/console/go/)
 
 ## License
 

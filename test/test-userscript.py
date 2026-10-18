@@ -3,6 +3,7 @@
 The console document and every API request are intercepted locally, so the test
 does not depend on a real OpenCode session or network access.
 """
+import argparse
 import json
 import time
 from pathlib import Path
@@ -720,6 +721,7 @@ def test_forecast_beta_toggle():
 
         page.locator('[data-tab="overview"]').click()
         overview_forecast.wait_for(state="visible", timeout=15000)
+        overview_forecast.locator(".ocgo-forecast-card").first.wait_for(timeout=15000)
         assert overview_forecast.locator(".ocgo-forecast-card").count() == 4
         overview_table = page.locator('[data-view="overview"] tbody').first
         overview_table.wait_for(state="visible", timeout=5000)
@@ -914,16 +916,66 @@ def test_forecast_status_fallback():
         browser.close()
 
 
+def capture_readme_screenshots():
+    output_dir = Path(__file__).resolve().parent.parent / "image" / "README"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        for language in ("zh", "en"):
+            suffix = "zh-CN" if language == "zh" else "en"
+            context = browser.new_context(
+                viewport={"width": 1360, "height": 1040},
+                reduced_motion="reduce",
+            )
+            context.add_init_script("""
+              localStorage.setItem('ocgo-lens:panelState', JSON.stringify({
+                open: true, width: 1200, height: 920, x: 40, y: 24
+              }));
+              localStorage.setItem('ocgo-lens:experimentalForecast', JSON.stringify(true));
+            """)
+            page = context.new_page()
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            install_routes(page, [], pricing_seen=[], status_seen=[])
+            open_fixture(context, page, language=language)
+            page.locator('.ocgo-sync-btn').click()
+            page.locator('.ocgo-statusbar').filter(has_text='3').wait_for(timeout=15000)
+            page.locator('[data-view="overview"] .ocgo-forecast-card').first.wait_for(timeout=15000)
+            page.locator('.ocgo-toast').wait_for(state='hidden', timeout=6000)
+            page.locator('#ocgo-lens-panel').screenshot(
+                path=str(output_dir / f'overview.{suffix}.png'),
+            )
+
+            page.locator('[data-tab="forecast"]').click()
+            page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
+            page.wait_for_timeout(250)
+            page.locator('#ocgo-lens-panel').screenshot(
+                path=str(output_dir / f'usage-forecast.{suffix}.png'),
+            )
+            context.close()
+        browser.close()
+    if errors:
+        raise RuntimeError(errors)
+    print(f'Wrote README screenshots to {output_dir}')
+
+
+
 if __name__ == "__main__":
-    test_main_flow()
-    test_english_browser_locale()
-    test_overview_cache_write_card()
-    test_model_tables_hide_zero_token_models()
-    test_forecast_beta_toggle()
-    test_forecast_refresh_keeps_view()
-    test_forecast_status_fallback()
-    test_fab_and_resize_interactions()
-    test_workspace_route_change()
-    test_rate_limit_retry()
-    test_session_error()
-    print("userscript e2e tests OK")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--capture-readme", action="store_true")
+    args = parser.parse_args()
+    if args.capture_readme:
+        capture_readme_screenshots()
+    else:
+        test_main_flow()
+        test_english_browser_locale()
+        test_overview_cache_write_card()
+        test_model_tables_hide_zero_token_models()
+        test_forecast_beta_toggle()
+        test_forecast_refresh_keeps_view()
+        test_forecast_status_fallback()
+        test_fab_and_resize_interactions()
+        test_workspace_route_change()
+        test_rate_limit_retry()
+        test_session_error()
+        print("userscript e2e tests OK")
