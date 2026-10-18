@@ -743,7 +743,13 @@ def test_forecast_beta_toggle():
         page.wait_for_timeout(100)
         assert page.locator('[data-view="forecast"] .ocgo-forecast-row.ocgo-active').get_attribute("data-model") == "deepseek-v4.1-flash"
 
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector('.ocgo-panel', state='visible', timeout=15000)
+        assert forecast_tab.is_visible()
+        assert page.locator('[data-view="forecast"]').is_visible()
         page.locator('[data-tab="data"]').click()
+        assert page.locator('.ocgo-experimental-row input').is_checked()
+
         page.locator('.ocgo-experimental-row input').uncheck()
         assert forecast_tab.is_hidden()
         assert page.locator('[data-view="data"]').is_visible()

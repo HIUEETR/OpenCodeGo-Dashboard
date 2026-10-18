@@ -234,6 +234,8 @@ export class Panel {
     this.language = loadJSON<Language>(LANGUAGE_STORAGE_KEY, detectLanguage());
     this.rangePreset = loadJSON<RangePreset>(RANGE_STORAGE_KEY, '7d');
     this.activeTab = loadJSON<TabKey>(TAB_STORAGE_KEY, 'overview');
+    this.experimentalForecast = loadJSON<boolean>(EXPERIMENTAL_FORECAST_KEY, false);
+    if (!this.experimentalForecast && this.activeTab === 'forecast') this.activeTab = 'data';
     this.filters = loadJSON<AnalyticsFilters>(FILTERS_STORAGE_KEY, { model: '', provider: '', userKey: '' });
     this.persisted = loadJSON<PersistedPanelState>(PANEL_STATE_KEY, {});
     if (typeof this.persisted.chartScale === 'number' && Number.isFinite(this.persisted.chartScale)) {

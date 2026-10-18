@@ -3693,6 +3693,8 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.language = loadJSON(LANGUAGE_STORAGE_KEY, detectLanguage());
       this.rangePreset = loadJSON(RANGE_STORAGE_KEY, "7d");
       this.activeTab = loadJSON(TAB_STORAGE_KEY, "overview");
+      this.experimentalForecast = loadJSON(EXPERIMENTAL_FORECAST_KEY, false);
+      if (!this.experimentalForecast && this.activeTab === "forecast") this.activeTab = "data";
       this.filters = loadJSON(FILTERS_STORAGE_KEY, { model: "", provider: "", userKey: "" });
       this.persisted = loadJSON(PANEL_STATE_KEY, {});
       if (typeof this.persisted.chartScale === "number" && Number.isFinite(this.persisted.chartScale)) {
