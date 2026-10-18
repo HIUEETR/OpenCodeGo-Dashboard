@@ -1,449 +1,641 @@
-"""End-to-end tests for userscript v0.10.0 (offline via route interception + usage view)."""
+"""End-to-end tests for the OpenCode Performance Lens userscript.
+
+The console document and every API request are intercepted locally, so the test
+does not depend on a real OpenCode session or network access.
+"""
 import json
-import time as _time
+import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
-USER_JS = Path(__file__).resolve().parent / "opencodego-dashboard.user.js"
-if not USER_JS.exists():
-    USER_JS = Path(__file__).resolve().parent.parent / "opencodego-dashboard.user.js"
-WS = "wrk_TEST"
-USAGE_ID = "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c"
-WORKSPACES_ID = "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f"
-
-REC = {
-    "A": {"id": "usg_a", "timeCreated": "2026-08-10T09:00:00.000Z", "model": "deepseek-v4-flash",
-          "inputTokens": 1000, "outputTokens": 500, "reasoningTokens": 200, "cacheReadTokens": 9000,
-          "cacheWrite5mTokens": None, "cacheWrite1hTokens": None, "cost": 100000},
-    "B": {"id": "usg_b", "timeCreated": "2026-08-10T10:00:00.000Z", "model": "deepseek-v4-flash",
-          "inputTokens": 2000, "outputTokens": 1000, "reasoningTokens": 300, "cacheReadTokens": 18000,
-          "cacheWrite5mTokens": None, "cacheWrite1hTokens": None, "cost": 200000},
-}
-
-PAGE0_NEW = [
-    {"id": "usg_d%02d" % i, "timeCreated": "2026-08-11T%02d:00:00.000Z" % (i % 24),
-     "model": "deepseek-v4-flash", "inputTokens": 100 + i, "outputTokens": 50 + i,
-     "reasoningTokens": 10 + i, "cacheReadTokens": 900 + i, "cacheWrite5mTokens": None,
-     "cacheWrite1hTokens": None, "cost": 1000 + i}
-    for i in range(48)
-]
-
-
-def js_rec(r):
-    return ('{id:"%s",workspaceID:"wrk_TEST",timeCreated:new Date("%s"),model:"%s",provider:"inf-go.openai",'
-            'inputTokens:%s,outputTokens:%s,reasoningTokens:%s,cacheReadTokens:%s,cacheWrite5mTokens:null,'
-            'cacheWrite1hTokens:null,cost:%s,keyID:"k",sessionID:"",enrichment:{plan:"lite"}}') % (
-        r["id"], r["timeCreated"], r["model"], r["inputTokens"], r["outputTokens"], r["reasoningTokens"],
-        r["cacheReadTokens"], r["cost"])
+USER_JS = Path(__file__).resolve().parent.parent / "opencodego-dashboard.user.js"
+WORKSPACE = "wrk_TEST"
+SECOND_WORKSPACE = "wrk_SECOND"
+HTML = """
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>OpenCode Console</title></head>
+  <body><main>OpenCode Console fixture</main></body>
+</html>
+"""
+HTML_DOCS = """
+<!doctype html>
+<html lang="en">
+  <body>
+    <table>
+      <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$80</strong></td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Model</th><th>Model ID</th><th>Endpoint</th><th>AI SDK Package</th></tr></thead>
+      <tbody>
+        <tr><td>DeepSeek V4.1 Flash</td><td>deepseek-v4.1-flash</td><td>https://opencode.ai/inference/go/openai/v1/chat/completions</td><td>@ai-sdk/openai-compatible</td></tr>
+      </tbody>
+    </table>
+  </body>
+</html>
+"""
 
 
-def seroval_response(records):
-    expr = ('((self.$R=self.$R||{})["server-fn:test"]=[],($R=>$R[0]=[%s])("server-fn:test"))'
-            % ",".join(js_rec(r) for r in records))
-    b = expr.encode("utf-8")
-    return (";0x%08x;" % len(b)).encode("utf-8") + b
+def api_record(
+    index: int,
+    *,
+    workspace: str = WORKSPACE,
+    outcome: str = "succeeded",
+    model: str = "deepseek-v4.1-flash",
+    cache_write: int = 0,
+) -> dict:
+    started = int(time.time() * 1000) - (10 + index) * 60_000
+    output = 220 + index * 10
+    return {
+        "id": f"req_{index}",
+        "requestID": f"request_{index}",
+        "workspaceID": workspace,
+        "startedAt": started,
+        "finishedAt": started + 3200,
+        "durationMs": 3200,
+        "outcome": outcome,
+        "category": "inference",
+        "protocol": "openai-responses",
+        "product": "go",
+        "path": "/inference/go/openai/v1/responses",
+        "method": "POST",
+        "stream": True,
+        "sessionID": f"session_{index}",
+        "userID": "user_1",
+        "serviceAccountID": "",
+        "serviceAPIKeyID": "key_1",
+        "requestedModel": model,
+        "model": model,
+        "provider": "opencode",
+        "statusCode": 200 if outcome == "succeeded" else 502,
+        "timeToFirstTokenMs": 800,
+        "firstTokenAt": started + 800,
+        "lastTokenAt": started + 3000,
+        "inputTokens": 100,
+        "outputTokens": output,
+        "reasoningTokens": 20,
+        "cacheReadTokens": 1000,
+        "cacheWriteTokens": cache_write,
+        "cacheWrite1hTokens": 0,
+        "cost": 0.001,
+    }
 
 
-def seroval_array(values):
-    # plain array of pre-formatted JS literals (e.g. ['"wrk_TEST"'])
-    expr = ('((self.$R=self.$R||{})["server-fn:test"]=[],($R=>$R[0]=[%s])("server-fn:test"))'
-            % ",".join(values))
-    b = expr.encode("utf-8")
-    return (";0x%08x;" % len(b)).encode("utf-8") + b
+def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, zero_token_model=None):
+    limited = {"done": False}
 
-
-POOL_BODY = json.dumps({"message": "target: opencode.-.primary: vttablet: rpc error: code = ResourceExhausted desc = transaction pool connection limit exceeded (CallerID: l33kfo3ift2ikdn2b8dk)", "code": "UNKNOWN"})
-
-
-def make_page_rows(n, count=50):
-    return [
-        {"id": "usg_p%d_%02d" % (n, i),
-         "timeCreated": "2026-08-12T%02d:%02d:00.000Z" % ((n + i) % 24, i % 60),
-         "model": "deepseek-v4-flash", "inputTokens": 1000 + n * 100 + i, "outputTokens": 500 + i,
-         "reasoningTokens": 100 + i, "cacheReadTokens": 9000 + i, "cacheWrite5mTokens": None,
-         "cacheWrite1hTokens": None, "cost": 100000 + i}
-        for i in range(count)
-    ]
-
-
-def goto_retry(page, url):
-    for attempt in range(4):
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    def handler(route):
+        request = route.request
+        url = request.url
+        if url.endswith("/console/api/user/workspaces"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps([
+                    {"id": WORKSPACE, "name": "Default", "role": "owner", "memberCount": 1, "avatarUrl": None},
+                    {"id": SECOND_WORKSPACE, "name": "Second", "role": "owner", "memberCount": 1, "avatarUrl": None},
+                ]),
+            )
             return
-        except Exception as e:
-            print(f"goto attempt {attempt + 1} failed: {str(e)[:80]}; retrying...")
-            _time.sleep(5)
-
-
-def main():
-    usage_requests = []
-    usage_counts = {}
-    SLOW = [False]
-    FAIL = {"fail_once": {}, "always_fail": set(), "http_fail": {}, "full_until": 1}
-
-    def reset_fail():
-        FAIL.update({"fail_once": {}, "always_fail": set(), "http_fail": {}, "full_until": 1})
-        usage_counts.clear()
-        usage_requests.clear()
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context()
-        # v0.9.0: default to zh UI (Playwright browsers default to en-US); language switch is tested below
-        ctx.add_init_script("localStorage.setItem('ocgo:config', JSON.stringify({lang:'zh', enabled:true}))")
-        ctx.add_init_script(USER_JS.read_text(encoding="utf-8"))
-        page = ctx.new_page()
-        errors = []
-        page.on("pageerror", lambda e: errors.append("pageerror: " + str(e)))
-        page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text[:200]}") if m.type == "error" else None)
-
-        def handle_route(route):
-            req = route.request
-            if req.headers.get("x-server-id") == WORKSPACES_ID:
-                route.fulfill(status=200, content_type="text/javascript", body=seroval_array(['"wrk_TEST"']))
+        if urlparse(url).path.endswith("/console/api/usage/users"):
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "items": [{
+                        "userId": "user_1",
+                        "serviceUserId": "",
+                        "principalType": "member",
+                        "email": "alice@example.com",
+                        "name": "Alice",
+                        "avatarUrl": None,
+                    }],
+                    "page": 1,
+                    "pageSize": 100,
+                    "total": 1,
+                    "pageCount": 1,
+                }),
+            )
+            return
+        if urlparse(url).path == "/v2/docs/console/go/":
+            if pricing_seen is not None:
+                pricing_seen.append(url)
+            route.fulfill(status=200, content_type="text/html", body=HTML_DOCS)
+            return
+        if "/console/api/request-logs" in url:
+            requests_seen.append({"url": url, "headers": request.headers})
+            if unauthorized:
+                route.fulfill(
+                    status=401,
+                    content_type="application/json",
+                    body=json.dumps({"message": "unauthorized"}),
+                )
                 return
-            if req.headers.get("x-server-id") != USAGE_ID:
-                return route.continue_()
-            usage_requests.append(req)
-            body = json.loads(req.post_data or "{}")
-            try:
-                page_num = body["t"]["a"][1]["s"]
-            except Exception:
-                page_num = -1
-            usage_counts[page_num] = usage_counts.get(page_num, 0) + 1
-            if SLOW[0]:
-                _time.sleep(2.5)
-            if page_num in FAIL["always_fail"]:
-                route.fulfill(status=400, content_type="application/json", body=POOL_BODY)
+            if rate_limit_once and not limited["done"]:
+                limited["done"] = True
+                route.fulfill(
+                    status=429,
+                    headers={"content-type": "application/json", "retry-after": "0"},
+                    body=json.dumps({"message": "slow down"}),
+                )
                 return
-            if page_num in FAIL["fail_once"] and FAIL["fail_once"][page_num] > 0:
-                FAIL["fail_once"][page_num] -= 1
-                route.fulfill(status=400, content_type="application/json", body=POOL_BODY)
-                return
-            if page_num in FAIL["http_fail"]:
-                status, body = FAIL["http_fail"][page_num]
-                route.fulfill(status=status, content_type="application/json", body=body)
-                return
-            if page_num == 0:
-                data = seroval_response(PAGE0_NEW + [REC["B"], REC["A"]])
-            elif page_num < FAIL["full_until"]:
-                data = seroval_response(make_page_rows(page_num, 50))
+            query = parse_qs(urlparse(url).query)
+            cursor = query.get("cursor", [None])[0]
+            workspace = request.headers.get("x-org-id", WORKSPACE)
+            if cursor is None:
+                items = [
+                    api_record(1, workspace=workspace, cache_write=cache_write),
+                    api_record(2, workspace=workspace, cache_write=cache_write),
+                ]
+                if zero_token_model:
+                    empty = api_record(0, workspace=workspace, model=zero_token_model)
+                    empty.update({
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "reasoningTokens": 0,
+                        "cacheReadTokens": 0,
+                        "cacheWriteTokens": 0,
+                        "cacheWrite1hTokens": 0,
+                        "cost": 0,
+                    })
+                    items.insert(0, empty)
+                next_cursor = "page-2"
             else:
-                data = seroval_response([REC["B"], REC["A"]])
-            route.fulfill(status=200, content_type="text/javascript", body=data)
+                items = [api_record(3, workspace=workspace, cache_write=cache_write)]
+                next_cursor = None
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "items": items,
+                    "nextCursor": next_cursor,
+                    "until": int(time.time() * 1000),
+                    "retentionDays": 30,
+                }),
+            )
+            return
+        if "opencode.ai/console/" in url:
+            route.fulfill(status=200, content_type="text/html", body=HTML)
+            return
+        route.fulfill(status=404, content_type="text/plain", body="not found")
 
-        page.route("**/_server", handle_route)
+    page.route("https://opencode.ai/**", handler)
 
-        goto_retry(page, "https://opencode.ai/go")
-        page.wait_for_timeout(3000)
 
-        fab = page.locator("#ocgo-fab")
-        assert fab.is_visible(), "FAB not visible"
-        panel = page.locator("#ocgo-panel")
-        if not panel.is_visible():
-            fab.click()
-            page.wait_for_timeout(300)
+def open_fixture(context, page, *, open_panel=True, language="zh"):
+    language_setup = "" if language is None else f"localStorage.setItem('ocgo-lens:language', JSON.stringify({json.dumps(language)}));"
+    context.add_init_script(
+        f"""
+        if (!localStorage.getItem('ocgo-lens:panelState')) {{
+          localStorage.setItem('ocgo-lens:panelState', JSON.stringify({{open:{str(open_panel).lower()}}}));
+        }}
+        if (!localStorage.getItem('ocgo-lens:language')) {{
+          {language_setup}
+        }}
+        if (!localStorage.getItem('ocgo-lens:range')) {{
+          localStorage.setItem('ocgo-lens:range', JSON.stringify('7d'));
+        }}
+        """
+    )
+    context.add_init_script(USER_JS.read_text(encoding="utf-8"))
+    page.goto(f"https://opencode.ai/console/{WORKSPACE}", wait_until="domcontentloaded")
+    page.wait_for_selector("#ocgo-lens-host", state="attached", timeout=15000)
+    page.wait_for_selector(".ocgo-panel", state="visible" if open_panel else "hidden", timeout=15000)
 
-        # v0.7.0: tabs = 数据/使用历史/日志; no Keys; no 打开用量页面; no 调试 toggle
-        tab_names = page.locator("#ocgo-tabs button").all_text_contents()
-        print("tabs:", tab_names)
-        assert tab_names == ["数据", "使用历史", "日志"], tab_names
-        assert page.locator("#ocgo-btns button", has_text="Keys").count() == 0
-        assert page.locator("#ocgo-btns button", has_text="打开用量页面").count() == 0
-        assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
-        head_labels = page.locator("#ocgo-head label").all_text_contents()
-        print("head labels:", head_labels)
-        assert head_labels == [], head_labels  # 总开关/日志/调试 勾选框全部移除
-        assert page.locator("#ocgo-head input[type=checkbox]").count() == 0
-        print("UI OK: tabs=数据/使用历史/日志, no Keys/open-view, no toggles")
 
-        # v0.9.0: language switch (zh -> en -> zh) rebuilds the UI in-place
-        page.select_option("#ocgo-lang", "en")
+def test_main_flow():
+    requests_seen = []
+    pricing_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, pricing_seen=pricing_seen)
+        open_fixture(context, page)
+
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+
+        assert len(requests_seen) >= 2, requests_seen
+        first = requests_seen[0]
+        first_query = parse_qs(urlparse(first["url"]).query)
+        assert first_query["category"] == ["inference"]
+        assert first_query["limit"] == ["50"]
+        assert first["headers"].get("x-org-id") == WORKSPACE
+        assert any("cursor=page-2" in seen["url"] for seen in requests_seen)
+
+        before_cached_sync = len(requests_seen)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.locator('.ocgo-toast').filter(has_text="已是最新，没有新数据").wait_for(timeout=10000)
+        assert len(requests_seen) == before_cached_sync + 1, requests_seen[before_cached_sync:]
         page.wait_for_timeout(300)
-        en_tabs = page.locator("#ocgo-tabs button").all_text_contents()
-        print("en tabs:", en_tabs)
-        assert en_tabs == ["Data", "Usage History", "Logs"], en_tabs
-        assert page.locator("#ocgo-btns button", has_text="Fetch all usage").count() == 1
-        assert page.locator("#ocgo-btns button", has_text="Clear history").count() == 1
-        assert page.locator("#ocgo-close").is_visible()
-        page.select_option("#ocgo-lang", "zh")
-        page.wait_for_timeout(300)
-        zh_tabs = page.locator("#ocgo-tabs button").all_text_contents()
-        assert zh_tabs == ["数据", "使用历史", "日志"], zh_tabs
-        assert page.locator("#ocgo-btns button", has_text="拉取全量用量").count() == 1
-        print("language switch OK: en tabs + buttons, back to zh")
+        panel_box = page.locator('.ocgo-panel').bounding_box()
+        toast_box = page.locator('.ocgo-toast').bounding_box()
+        assert panel_box is not None and toast_box is not None
+        assert abs((toast_box["x"] + toast_box["width"] / 2) - (panel_box["x"] + panel_box["width"] / 2)) < 2
+        assert toast_box["y"] - panel_box["y"] < 80
+        assert toast_box["width"] <= 300
+        assert pricing_seen, "Go pricing document should be fetched on first use"
+        pricing_fetch_count = len(pricing_seen)
 
-        # Load the workspace list through the real RPC path (intercepted offline).
-        # NOTE: refresh button lives in #ocgo-ws-row (not #ocgo-btns, which is the data/log button row).
-        page.locator("#ocgo-ws-row button", has_text="刷新工作区").click()
-        page.wait_for_function(
-            "() => Array.from(document.querySelector('#ocgo-ws').options).some(o => o.value === 'wrk_TEST')",
-            timeout=10000)
-        page.select_option("#ocgo-ws", WS)
-        assert page.locator("#ocgo-ws").input_value() == WS
+        tooltip = page.locator('.ocgo-chart-tooltip')
+        metric_cells = page.locator('[data-view="overview"] .ocgo-metric-hover')
+        assert metric_cells.count() == 2
+        metric_cells.nth(0).hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        token_metric_text = tooltip.inner_text()
+        assert "总 tokens" in token_metric_text
+        assert "缓存读" in token_metric_text
+        assert "4,020" in token_metric_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
+        metric_cells.nth(1).hover()
+        tooltip.wait_for(state="visible", timeout=5000)
+        cost_metric_text = tooltip.inner_text()
+        assert "输入费用" in cost_metric_text
+        assert "输出费用" in cost_metric_text
+        assert "估算" in cost_metric_text
+        page.mouse.move(5, 5)
+        tooltip.wait_for(state="hidden", timeout=5000)
 
-        # v0.9.1 regression: workspace selection must survive language switch (no refresh needed)
-        page.select_option("#ocgo-lang", "en")
-        page.wait_for_timeout(300)
-        assert page.locator("#ocgo-ws").input_value() == WS, page.locator("#ocgo-ws").input_value()
-        page.select_option("#ocgo-lang", "zh")
-        page.wait_for_timeout(300)
-        assert page.locator("#ocgo-ws").input_value() == WS, page.locator("#ocgo-ws").input_value()
-        assert page.locator("#ocgo-ws option", has_text="wrk_TEST").count() == 1
-        print("workspace survives language switch OK (value=" + page.locator("#ocgo-ws").input_value() + ")")
+        panel_background = page.locator('.ocgo-panel').evaluate("element => getComputedStyle(element).backgroundColor")
+        assert panel_background == "rgb(22, 22, 22)"
+        assert page.locator('.ocgo-body').evaluate("element => getComputedStyle(element).scrollbarWidth") == "thin"
 
-        # Scenario A: complete history -> early stop after page 0
-        page.evaluate(
-            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
-            {"ws": WS, "a": REC["A"], "b": REC["B"]},
-        )
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('命中历史')", timeout=30000)
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
-        assert len(usage_requests) == 1, usage_requests
-        assert u["count"] == 50 and u["meta"]["complete"] is True, u
-        print("A OK: 1 request, 50 merged, complete")
+        page.locator('[data-tab="charts"]').click()
+        page.wait_for_selector("svg.ocgo-chart-svg", timeout=5000)
+        assert page.locator("svg.ocgo-chart-svg").count() >= 4
+        overview_cards = page.locator('[data-view="overview"] .ocgo-card')
+        assert overview_cards.locator('.ocgo-card-label').all_text_contents() == [
+            "请求",
+            "费用",
+            "输入 tokens",
+            "输出 tokens",
+            "TTFT（平均 / 最慢）",
+            "输出 TPS（平均 / 最慢）",
+            "缓存读",
+            "缓存命中率",
+        ]
+        assert overview_cards.filter(has_text="缓存写").count() == 0
+        for index in (2, 3, 6, 7):
+            assert overview_cards.nth(index).locator('.ocgo-card-sub').count() == 0
+        assert "tok/s" in overview_cards.nth(5).locator('.ocgo-card-value').inner_text()
+        assert "tok/s" not in overview_cards.nth(5).locator('.ocgo-card-sub').inner_text()
+        assert "TTFT 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
+        assert "TPS 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
+        assert page.locator('[data-view="charts"] th').filter(has_text="总 tokens").count() == 1
+        assert page.locator('[data-view="overview"] th').filter(has_text="总 tokens").count() == 1
+        assert "4.0k" in page.locator('[data-view="charts"] tbody tr').first.text_content()
+        assert "4.0k" in page.locator('[data-view="overview"] tbody tr').first.text_content()
+        averages = page.locator('[data-view="charts"] .ocgo-section-average')
+        assert averages.count() == 4
+        assert all(averages.nth(index).inner_text() for index in range(4))
+        assert all("p50" not in averages.nth(index).inner_text().lower() for index in range(4))
 
-        # Scenario B (v0.9.3): incomplete history -> full fetch pages to the end and marks complete
-        # (no early "hit history" stop when history is incomplete, so no false 不完整 warning)
-        page.evaluate(
-            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: false }); }""",
-            {"ws": WS, "a": REC["A"], "b": REC["B"]},
-        )
-        SLOW[0] = True
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_timeout(800)
-        assert page.locator("#ocgo-btn-stop").is_visible(), "stop button should be visible while task running"
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=30000)
-        SLOW[0] = False
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
-        assert len(usage_requests) == 3, usage_requests  # A:1 + B: page0 + page1
-        assert u["count"] == 50 and u["meta"]["complete"] is True, u
-        assert not page.locator("#ocgo-btn-stop").is_visible()
-        assert "不完整" not in page.locator("#ocgo-history-state").text_content(), page.locator("#ocgo-history-state").text_content()
-        print("B OK: full fetch from incomplete history -> 2 requests, 50 merged, complete=True, no false warning")
+        def chart_hosts_have_no_scroll() -> None:
+            metrics = page.locator('[data-view="charts"] .ocgo-chart-host').evaluate_all(
+                "elements => elements.map((element) => ({"
+                "scrollHeight: element.scrollHeight, "
+                "clientHeight: element.clientHeight, "
+                "overflowY: getComputedStyle(element).overflowY"
+                "}))"
+            )
+            assert all(item["scrollHeight"] <= item["clientHeight"] + 1 for item in metrics), metrics
+            assert all(item["overflowY"] not in ("auto", "scroll") for item in metrics), metrics
 
-        # ---- v0.10.0: degraded retry ----
-        # C: transient pool error on page 1 -> retried once, fetch completes
-        reset_fail()
-        FAIL["fail_once"] = {1: 1}
-        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=40000)
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length, meta: x.meta }; }", WS)
-        assert usage_counts.get(1, 0) == 2, usage_counts  # page 1 failed once, then retried
-        assert u["meta"]["complete"] is True, u
-        log_text = page.locator("#ocgo-log-list").text_content()
-        assert "重试" in log_text, log_text[:500]
-        print("C OK: transient pool error retried once, fetch complete, page1 x2")
-
-        # D: failure enters degraded mode, 5 clean pages exit it
-        reset_fail()
-        FAIL["fail_once"] = {0: 1}
-        FAIL["full_until"] = 6
-        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全量用量拉取完成')", timeout=60000)
-        log_text = page.locator("#ocgo-log-list").text_content()
-        assert "退级模式" in log_text, log_text[:500]
-        assert "退出退级模式" in log_text, log_text[:500]
-        assert usage_counts.get(0, 0) == 2, usage_counts  # page 0 failed once, then retried
-        print("D OK: degraded mode entered after failure and exited after 5 clean pages")
-
-        # E: persistent pool error -> retries exhausted -> fetch aborts, partial history kept incomplete
-        reset_fail()
-        FAIL["always_fail"] = {2}
-        FAIL["full_until"] = 2
-        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('失败')", timeout=60000)
-        assert usage_counts.get(2, 0) == 5, usage_counts  # 1 initial + 4 retries
-        log_text = page.locator("#ocgo-log-list").text_content()
-        assert "中止拉取" in log_text, log_text[:500]
-        page.wait_for_function(
-            """async (ws) => { const x = await window.__ocgo.loadUsage(ws); return x.records.length >= 100 && x.meta.complete === false; }""",
-            arg=WS, timeout=10000)
-        print("E OK: exhausted retries abort fetch, partial history kept incomplete")
-
-        # F: non-retryable error -> no retry; isRetryableError classification
-        reset_fail()
-        FAIL["http_fail"] = {1: (403, '{"message":"forbidden"}')}
-        FAIL["full_until"] = 1
-        page.evaluate("async (ws) => { await window.__ocgo.clearCache(); }", WS)
-        page.locator("#ocgo-btns button.ocgo-primary", has_text="拉取全量用量").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('失败')", timeout=30000)
-        assert usage_counts.get(1, 0) == 1, usage_counts  # non-retryable 403 -> single attempt
-        retryable = page.evaluate("""() => ({
-          pool: window.__ocgo.isRetryableError(new Error('HTTP 400: usage.list -> transaction pool connection limit exceeded')),
-          http500: window.__ocgo.isRetryableError(new Error('HTTP 500: usage.list -> boom')),
-          http403: window.__ocgo.isRetryableError(new Error('HTTP 403: usage.list -> nope')),
-          decode: window.__ocgo.isRetryableError(new Error('decode failed')),
-        })""")
-        assert retryable["pool"] and retryable["http500"], retryable
-        assert not retryable["http403"] and not retryable["decode"], retryable
-        print("F OK: non-retryable 403 fails immediately; isRetryableError classification correct")
-
-        # G: clear history requires inline confirmation
-        page.evaluate(
-            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
-            {"ws": WS, "a": REC["A"], "b": REC["B"]},
-        )
-        confirm_bar = page.locator("#ocgo-clear-confirm")
-        assert not confirm_bar.is_visible(), "confirm bar should be hidden by default"
-        page.locator("#ocgo-btns button", has_text="清空历史").click()
-        page.wait_for_timeout(200)
-        assert confirm_bar.is_visible(), "confirm bar should appear after clicking 清空历史"
-        bar_text = confirm_bar.text_content()
-        assert "确认清空" in bar_text and "取消" in bar_text, bar_text
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
-        assert u["count"] == 2, u  # not cleared yet
-        # cancel keeps history
-        page.locator("#ocgo-clear-confirm button", has_text="取消").click()
-        page.wait_for_timeout(200)
-        assert not confirm_bar.is_visible(), "confirm bar should hide after cancel"
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
-        assert u["count"] == 2, u  # history untouched
-        # confirm clears history
-        page.locator("#ocgo-btns button", has_text="清空历史").click()
-        page.wait_for_timeout(200)
-        page.locator("#ocgo-clear-confirm button", has_text="确认清空").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('历史已清空')", timeout=10000)
-        page.wait_for_timeout(200)
-        assert not confirm_bar.is_visible(), "confirm bar should hide after clearing"
-        u = page.evaluate("async (ws) => { const x = await window.__ocgo.loadUsage(ws); return { count: x.records.length }; }", WS)
-        assert u["count"] == 0, u
-        print("G OK: inline confirmation required for clear history (cancel keeps, confirm clears)")
-
-        # History tab: seed cache (50 rows from scenario A) then render usage history table
-        page.evaluate(
-            """async ({ws, a, b}) => { await window.__ocgo.clearCache(); await window.__ocgo.cacheUsage(ws, [a, b], { full: true }); }""",
-            {"ws": WS, "a": REC["A"], "b": REC["B"]},
-        )
-        page.locator("#ocgo-tabs button", has_text="使用历史").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-history').textContent || '').includes('deepseek-v4-flash')", timeout=15000)
-        htext = page.locator("#ocgo-history").text_content()
-        hstatus = page.locator("#ocgo-history-status").text_content()
-        print("history status:", hstatus)
-        print("history table head:", htext[:120].replace("\n", " "))
-        assert "请求时间" in htext and "模型" in htext and "成本" in htext, htext[:200]
-        assert "deepseek-v4-flash" in htext
-        assert "共 2 条" in hstatus, hstatus
-        # v0.8.1: column order 输入->推理->缓存读->输出->成本; no 会话; 24h time yyyy/MM/dd HH:mm:ss
-        idx = [htext.index(k) for k in ["输入", "推理", "缓存读", "输出", "成本"]]
-        assert idx == sorted(idx), (idx, htext[:200])
-        assert "会话" not in htext, htext[:200]
-        import re as _re
-        assert _re.search(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}", htext), htext[:200]
-        print("history tab OK: ordered cols, 24h time, no session col")
-
-        # range switch -> all shows 2 rows too
-        page.select_option("#ocgo-history-range", "all")
-        page.wait_for_timeout(300)
-        hstatus2 = page.locator("#ocgo-history-status").text_content()
-        assert "共 2 条" in hstatus2, hstatus2
-        print("history range OK")
-
-        # ---- v0.8.0 checks ----
-        # default analysis range = today
-        page.locator("#ocgo-tabs button", has_text="数据").click()
-        page.wait_for_timeout(200)
-        assert page.locator("#ocgo-range-mode").input_value() == "today", "analysis range should default to today"
-        # v0.9.7 regression: first "开始分析" (without touching the range select) must use 当天, not 最近7天
-        page.locator("#ocgo-analyze-btns button", has_text="开始分析").click()
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('分析完成：当天')", timeout=15000)
-        assert "0 条" in page.locator("#ocgo-status").text_content(), page.locator("#ocgo-status").text_content()
-        print("first analysis uses 当天 OK")
-        # switch range -> auto analyze (cache exists with A/B)
-        page.select_option("#ocgo-range-mode", "7d")
-        page.wait_for_function("() => (document.querySelector('#ocgo-analysis').textContent || '').includes('缓存命中率')", timeout=15000)
-        print("auto-analyze on range switch OK")
-        # v0.9.4: by-model table has a per-model cache hit rate column
-        model_tbl = page.locator("#ocgo-analysis table.ocgo-tbl").first
-        model_head = model_tbl.locator("tr").first.locator("th").all_text_contents()
-        print("model table head:", model_head)
-        assert "缓存命中率" in model_head, model_head
-        cells = model_tbl.locator("tr").nth(1).locator("td").all_text_contents()
-        print("model row:", cells)
-        assert cells[5].endswith("%"), cells  # cacheRead 27000 / (input 3000 + cacheRead 27000) = 90.00%
-        assert cells[5] == "90.00%", cells
-        print("per-model cache hit rate OK")
-        # v0.9.5: status trimmed (no ｜持久历史 note) and cache state uses 24h time, no 用量[持久] prefix
-        status_text = page.locator("#ocgo-status").text_content()
-        assert "持久历史" not in status_text and "｜" not in status_text, status_text
-        cache_state_text = page.locator("#ocgo-history-state").text_content()
-        assert "用量[持久]" not in cache_state_text, cache_state_text
-        assert _re.search(r"\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}", cache_state_text), cache_state_text
-        print("status/cache-state trimmed + 24h time OK")
-        # data-page custom inputs synced after choosing 7d then custom
-        page.select_option("#ocgo-range-mode", "custom")
-        page.wait_for_timeout(200)
-        from_v = page.locator("#ocgo-range-from").input_value()
-        assert from_v, "custom from should be synced"
-        print("data custom from synced:", from_v)
-        # v0.9.2: analysis range includes "all" -> shows all history
-        assert page.locator("#ocgo-range-mode option[value=all]").count() == 1
-        page.select_option("#ocgo-range-mode", "all")
-        page.wait_for_function("() => (document.querySelector('#ocgo-status').textContent || '').includes('全部')", timeout=15000)
-        print("analysis all-range OK")
-        # history custom inputs follow range (7d -> now-7d)
-        page.locator("#ocgo-tabs button", has_text="使用历史").click()
-        page.wait_for_timeout(200)
-        page.select_option("#ocgo-history-range", "all")
-        page.wait_for_timeout(150)
-        page.select_option("#ocgo-history-range", "7d")
-        page.wait_for_timeout(200)
-        hfrom = page.locator("#ocgo-history-from").input_value()
-        hto = page.locator("#ocgo-history-to").input_value()
-        print("history from/to:", hfrom, hto)
-        assert hfrom and hto, "history custom inputs should follow range"
-        from datetime import datetime, timedelta
-        fdt = datetime.strptime(hfrom, "%Y-%m-%dT%H:%M")
-        expected = datetime.now() - timedelta(days=7)
-        assert abs((fdt - expected).total_seconds()) < 180, (fdt, expected)
-        print("history 7d sync OK (from ~ now-7d)")
-        # resize handles present
-        assert page.locator("#ocgo-panel .ocgo-rh").count() == 8, "expected 8 resize handles"
-        print("resize handles OK")
-        # clear button renamed to 清空历史
-        assert page.locator("#ocgo-btns button", has_text="清空历史").count() == 1
-        assert page.locator("#ocgo-btns button", has_text="清空缓存").count() == 0
-        print("wording OK: 清空历史, no 缓存 button")
-
-        # v0.8.3: resize persists across reload
-        box = page.locator("#ocgo-panel .ocgo-rh-se").bounding_box()
-        assert box, "se resize handle missing"
-        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        page.mouse.down()
-        page.mouse.move(min(box["x"] + box["width"] / 2 + 80, 1270), min(box["y"] + box["height"] / 2 + 80, 710), steps=5)
-        page.mouse.up()
-        page.wait_for_timeout(200)
-        size = json.loads(page.evaluate("() => localStorage.getItem('ocgo:panel-size') || 'null'"))
-        assert size and size["w"] > 0 and size["h"] > 0, size
-        print("resize saved:", size)
+        chart_hosts_have_no_scroll()
+        page.get_by_label("放大图表").click()
+        zoom_value = page.locator('.ocgo-zoom-value')
+        zoom_value.filter(has_text="125%").wait_for(timeout=5000)
+        assert "ocgo-chart-zoomed" in page.locator('.ocgo-chart-grid').get_attribute("class")
         page.reload(wait_until="domcontentloaded")
-        page.wait_for_timeout(1200)
-        w = page.evaluate("() => document.querySelector('#ocgo-panel').style.width")
-        h = page.evaluate("() => document.querySelector('#ocgo-panel').style.height")
-        assert w == str(size["w"]) + "px" and h == str(size["h"]) + "px", (w, h, size)
-        print("resize restored after reload OK")
+        page.wait_for_selector(".ocgo-panel", state="visible", timeout=15000)
+        zoom_value = page.locator('.ocgo-zoom-value')
+        zoom_value.filter(has_text="125%").wait_for(timeout=5000)
+        zoom_value.click()
+        zoom_value.filter(has_text="100%").wait_for(timeout=5000)
+        for _ in range(2):
+            page.get_by_label("缩小图表").click()
+        zoom_value.filter(has_text="50%").wait_for(timeout=5000)
+        assert page.get_by_label("缩小图表").is_disabled()
+        for _ in range(6):
+            page.get_by_label("放大图表").click()
+        zoom_value.filter(has_text="200%").wait_for(timeout=5000)
+        assert page.get_by_label("放大图表").is_disabled()
+        chart_hosts_have_no_scroll()
+        zoom_value.click()
+        zoom_value.filter(has_text="100%").wait_for(timeout=5000)
 
-        # v0.9.0: log list vertical size follows the resized panel (was fixed at 150px)
-        if not page.locator("#ocgo-panel").is_visible():
-            page.locator("#ocgo-fab").click()
-            page.wait_for_timeout(300)
-        page.locator("#ocgo-tabs button", has_text="日志").click()
+        def hover_chart(index: int) -> str:
+            chart = page.locator('[data-view="charts"] .ocgo-chart-box').nth(index)
+            target = chart.locator('.ocgo-hover-target').last
+            target.scroll_into_view_if_needed()
+            target.hover()
+            tooltip.wait_for(state="visible", timeout=5000)
+            text = tooltip.inner_text()
+            page.mouse.move(5, 5)
+            tooltip.wait_for(state="hidden", timeout=5000)
+            return text
+
+        token_tooltip = hover_chart(0)
+        assert "总 tokens" in token_tooltip
+        assert "输入" in token_tooltip
+        assert "缓存读" in token_tooltip
+        assert "缓存写" in token_tooltip
+        assert "输出" in token_tooltip
+        assert "4,020" in token_tooltip
+        assert "TTFT" not in token_tooltip
+        assert "TPS" not in token_tooltip
+        assert "命中率" not in token_tooltip
+
+        cache_tooltip = hover_chart(1)
+        assert "命中率" in cache_tooltip
+        assert "缓存读" in cache_tooltip
+        assert "缓存写" in cache_tooltip
+        assert "TTFT" not in cache_tooltip
+        assert "TPS" not in cache_tooltip
+        assert "总 tokens" not in cache_tooltip
+        assert "输入" not in cache_tooltip
+        assert "输出" not in cache_tooltip
+
+        ttft_tooltip = hover_chart(2)
+        assert "TTFT 平均" in ttft_tooltip
+        assert "TTFT 最慢" in ttft_tooltip
+        assert "TTFT 样本" in ttft_tooltip
+        assert "TPS" not in ttft_tooltip
+        assert "总 tokens" not in ttft_tooltip
+        assert "命中率" not in ttft_tooltip
+
+        tps_tooltip = hover_chart(3)
+        assert "TPS 平均" in tps_tooltip
+        assert "TPS 最慢" in tps_tooltip
+        assert "TPS 样本" in tps_tooltip
+        assert "TTFT" not in tps_tooltip
+        assert "总 tokens" not in tps_tooltip
+        assert "命中率" not in tps_tooltip
+
+        token_target = page.locator('[data-view="charts"] .ocgo-chart-box').first.locator('.ocgo-hover-target').last
+        token_target.focus()
+        tooltip.wait_for(state="visible", timeout=5000)
+        aria_label = token_target.get_attribute("aria-label") or ""
+        assert "TTFT" not in aria_label
+        assert "TPS" not in aria_label
+        token_target.evaluate("element => element.blur()")
+        tooltip.wait_for(state="hidden", timeout=5000)
+
+        page.locator('[data-tab="requests"]').click()
+        rows = page.locator('[data-view="requests"] .ocgo-table tbody tr')
+        assert rows.count() == 3, rows.count()
+        assert page.get_by_text("tok/s", exact=False).count() >= 1
+        page.locator('[data-view="requests"]').get_by_text("Alice", exact=True).first.wait_for(timeout=5000)
+        page.locator('[data-view="requests"] tbody a').first.click()
+        page.wait_for_selector('.ocgo-panel', state='hidden', timeout=5000)
+        page.locator('.ocgo-fab').click()
+        page.wait_for_selector('.ocgo-panel', state='visible', timeout=5000)
+
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_selector('.ocgo-panel', state='visible', timeout=15000)
         page.wait_for_timeout(300)
-        log_h = page.locator("#ocgo-log-list").evaluate("el => el.clientHeight")
-        print("log list height after resize:", log_h)
-        assert log_h > 150, log_h
-        print("log list grows with panel height OK")
+        assert len(pricing_seen) == pricing_fetch_count, pricing_seen
 
+        page.locator('[data-tab="data"]').click()
+        pricing_section = page.locator('.ocgo-pricing-section')
+        pricing_section.wait_for(state='visible', timeout=5000)
+        pricing_text = pricing_section.inner_text()
+        assert "缓存模型价格" in pricing_text
+        assert "DeepSeek V4.1 Flash" in pricing_text
+        assert "$0.30" in pricing_text
+        assert pricing_section.locator('tbody tr').count() == 1
+        pricing_box = pricing_section.bounding_box()
+        logs_box = page.locator('.ocgo-log-list').bounding_box()
+        assert pricing_box is not None and logs_box is not None
+        assert pricing_box["y"] < logs_box["y"]
+        with page.expect_download(timeout=10000) as download_info:
+            page.get_by_text("导出筛选明细 CSV", exact=True).click()
+        assert download_info.value.suggested_filename.endswith(".csv")
+
+        page.get_by_text("清空本地历史", exact=True).click()
+        page.get_by_text("再次点击确认清空", exact=True).click()
+        page.locator(".ocgo-statusbar").filter(has_text="0 条本地记录").wait_for(timeout=5000)
+
+        assert not errors, errors
         browser.close()
 
-    print("console errors:", errors[:5] if errors else "none")
+
+def test_fab_and_resize_interactions():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 720})
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen)
+        open_fixture(context, page, open_panel=False)
+
+        fab = page.locator('.ocgo-fab')
+        panel = page.locator('.ocgo-panel')
+        fab.click()
+        panel.wait_for(state="visible", timeout=5000)
+        assert fab.get_attribute("aria-expanded") == "true"
+        fab.click()
+        panel.wait_for(state="hidden", timeout=5000)
+        assert fab.get_attribute("aria-expanded") == "false"
+
+        before_drag = fab.bounding_box()
+        assert before_drag is not None
+        page.mouse.move(before_drag["x"] + 24, before_drag["y"] + 24)
+        page.mouse.down()
+        page.mouse.move(before_drag["x"] - 56, before_drag["y"] - 36, steps=6)
+        page.mouse.up()
+        after_drag = fab.bounding_box()
+        assert after_drag is not None
+        assert after_drag["x"] < before_drag["x"]
+        assert after_drag["y"] < before_drag["y"]
+        assert panel.is_hidden()
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector(".ocgo-panel", state="hidden", timeout=15000)
+        restored_fab = page.locator('.ocgo-fab').bounding_box()
+        assert restored_fab is not None
+        assert abs(restored_fab["x"] - after_drag["x"]) < 2
+        assert abs(restored_fab["y"] - after_drag["y"]) < 2
+        page.wait_for_timeout(400)
+
+        fab.click()
+        panel.wait_for(state="visible", timeout=5000)
+        page.mouse.click(10, 10)
+        panel.wait_for(state="hidden", timeout=5000)
+        fab.click()
+        panel.wait_for(state="visible", timeout=5000)
+        page.keyboard.press("Escape")
+        panel.wait_for(state="hidden", timeout=5000)
+
+        fab.click()
+        panel.wait_for(state="visible", timeout=5000)
+        handles = page.locator('.ocgo-resize-handle')
+        assert handles.count() == 8
+        panel_before = panel.bounding_box()
+        west = page.locator('[data-resize="w"]').bounding_box()
+        assert panel_before is not None and west is not None
+        page.mouse.move(west["x"] + west["width"] / 2, west["y"] + west["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(west["x"] - 36, west["y"] + west["height"] / 2, steps=5)
+        page.mouse.up()
+        panel_after = panel.bounding_box()
+        assert panel_after is not None
+        assert panel_after["x"] < panel_before["x"]
+        assert panel_after["width"] > panel_before["width"]
+        assert not errors, errors
+        browser.close()
+
+
+def test_workspace_route_change():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen)
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+
+        page.evaluate(f"history.pushState({{}}, '', '/console/{SECOND_WORKSPACE}')")
+        page.get_by_text("Second", exact=True).wait_for(timeout=10000)
+        page.locator(".ocgo-statusbar").filter(has_text="3 条本地记录").wait_for(timeout=15000)
+        assert any(seen["headers"].get("x-org-id") == SECOND_WORKSPACE for seen in requests_seen)
+        assert not errors, errors
+        browser.close()
+
+
+def test_rate_limit_retry():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, rate_limit_once=True)
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        assert len(requests_seen) >= 3
+        assert not errors, errors
+        browser.close()
+
+
+def test_session_error():
+    requests_seen = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        install_routes(page, requests_seen, unauthorized=True)
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.locator(".ocgo-error").filter(has_text="登录已失效").wait_for(timeout=10000)
+        browser.close()
+
+
+def test_english_browser_locale():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(locale="en-US")
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen)
+        open_fixture(context, page, language=None)
+
+        page.get_by_text("Sync now", exact=True).first.wait_for(timeout=5000)
+        page.get_by_text("Overview", exact=True).wait_for(timeout=5000)
+        page.get_by_text("Sync now", exact=True).first.click()
+        page.locator(".ocgo-statusbar").filter(has_text="3 local records").wait_for(timeout=15000)
+        page.locator('[data-tab="data"]').click()
+        levels = page.locator('.ocgo-log-level').all_text_contents()
+        assert levels and all(level in {"Info", "Warning", "Error"} for level in levels), levels
+        messages = page.locator('.ocgo-log-msg').all_text_contents()
+        assert any("sync" in message.lower() or "mounted" in message.lower() for message in messages), messages
+        assert not errors, errors
+        browser.close()
+
+
+def test_overview_cache_write_card():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, cache_write=125)
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+
+        cards = page.locator('[data-view="overview"] .ocgo-card')
+        labels = cards.locator('.ocgo-card-label').all_text_contents()
+        assert labels == [
+            "请求",
+            "费用",
+            "输入 tokens",
+            "输出 tokens",
+            "TTFT（平均 / 最慢）",
+            "输出 TPS（平均 / 最慢）",
+            "缓存写",
+            "缓存读",
+            "缓存命中率",
+        ], labels
+        assert cards.nth(6).locator('.ocgo-card-value').inner_text() == "375"
+        assert cards.nth(6).locator('.ocgo-card-sub').count() == 0
+        assert not errors, errors
+        browser.close()
+
+
+def test_model_tables_hide_zero_token_models():
+    requests_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, zero_token_model="empty-model")
+        open_fixture(context, page)
+        page.get_by_text("立即同步", exact=True).first.click()
+        page.locator(".ocgo-statusbar").filter(has_text="4 条本地记录").wait_for(timeout=15000)
+
+        for tab, view in (("overview", "overview"), ("charts", "charts")):
+            page.locator(f'[data-tab="{tab}"]').click()
+            rows = page.locator(f'[data-view="{view}"] tbody tr')
+            rows.first.wait_for(timeout=5000)
+            assert rows.count() == 1, rows.all_inner_texts()
+            text = rows.first.inner_text()
+            assert "deepseek-v4.1-flash" in text
+            assert "empty-model" not in text
+
+        assert not errors, errors
+        browser.close()
 
 
 if __name__ == "__main__":
-    main()
+    test_main_flow()
+    test_english_browser_locale()
+    test_overview_cache_write_card()
+    test_model_tables_hide_zero_token_models()
+    test_fab_and_resize_interactions()
+    test_workspace_route_change()
+    test_rate_limit_retry()
+    test_session_error()
+    print("userscript e2e tests OK")

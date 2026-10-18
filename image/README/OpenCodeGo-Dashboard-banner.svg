@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
-  <title id="title">OpenCodeGo-Dashboard 用量助手 · GitHub README Banner</title>
-  <desc id="desc">Dark animated SVG banner for the OpenCodeGo 用量助手 userscript: usage history, analytics and cache hit rate.</desc>
+  <title id="title">OpenCode Performance Lens · GitHub README Banner</title>
+  <desc id="desc">Dark animated SVG banner for the OpenCode Performance Lens userscript: cache hit rate, TTFT, output TPS and local analytics.</desc>
 
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -71,24 +71,24 @@
     <circle cx="22" cy="20" r="4" fill="#fff" fill-opacity=".55"/>
     <circle cx="38" cy="20" r="4" fill="#fff" fill-opacity=".25"/>
     <circle cx="54" cy="20" r="4" fill="#fff" fill-opacity=".12"/>
-    <text x="76" y="25" fill="#9ba4af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">opencodego / usage-assistant</text>
+    <text x="76" y="25" fill="#9ba4af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">opencode / performance-lens</text>
 
     <!-- mini code stream -->
     <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">
       <text x="24" y="68" fill="#737d89">$</text>
-      <text x="38" y="68" fill="#cfd5dc">usage</text>
+      <text x="38" y="68" fill="#cfd5dc">lens</text>
       <text x="24" y="88" fill="#606a76">01</text>
-      <text x="45" y="88" fill="#8d97a4">tokens</text>
-      <text x="108" y="88" fill="#e4e8ed">185.2M</text>
+      <text x="45" y="88" fill="#8d97a4">cache-hit</text>
+      <text x="108" y="88" fill="#e4e8ed">90.9%</text>
       <text x="24" y="108" fill="#606a76">02</text>
-      <text x="45" y="108" fill="#8d97a4">requests</text>
-      <text x="108" y="108" fill="#e4e8ed">5.4K</text>
+      <text x="45" y="108" fill="#8d97a4">ttft p50</text>
+      <text x="108" y="108" fill="#e4e8ed">800ms</text>
       <text x="24" y="128" fill="#606a76">03</text>
-      <text x="45" y="128" fill="#8d97a4">cache-hit</text>
-      <text x="108" y="128" fill="#e4e8ed">89%</text>
+      <text x="45" y="128" fill="#8d97a4">output tps</text>
+      <text x="108" y="128" fill="#e4e8ed">109.1</text>
       <text x="24" y="148" fill="#606a76">04</text>
-      <text x="45" y="148" fill="#8d97a4">cost</text>
-      <text x="108" y="148" fill="#e4e8ed">$47.59</text>
+      <text x="45" y="148" fill="#8d97a4">local records</text>
+      <text x="108" y="148" fill="#e4e8ed">12.4k</text>
     </g>
 
     <!-- animated chart -->
@@ -131,14 +131,14 @@
           fill="#ffffff"
           font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
           font-size="42" font-weight="700" letter-spacing="-1.6">
-      OpenCodeGo-Dashboard
+      OpenCode Performance Lens
     </text>
 
     <text x="2" y="39"
           fill="#89929e"
           font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"
           font-size="15" letter-spacing=".2">
-      USAGE · ANALYTICS · CACHE
+      CACHE HIT · TTFT · OUTPUT TPS
     </text>
 
     <!-- animated command cursor -->
@@ -150,13 +150,13 @@
     <circle cx="5" cy="-4" r="4" fill="#dfe4e9">
       <animate attributeName="opacity" values=".25;1;.25" dur="2s" repeatCount="indefinite"/>
     </circle>
-    <text x="18" fill="#7f8995">STATISTICS</text>
+    <text x="18" fill="#7f8995">CACHE HIT</text>
     <text x="70" fill="#4f5965">│</text>
-    <text x="88" fill="#7f8995">USAGE HISTORY</text>
+    <text x="88" fill="#7f8995">TTFT</text>
     <text x="205" fill="#4f5965">│</text>
-    <text x="223" fill="#7f8995">ANALYTICS</text>
+    <text x="223" fill="#7f8995">OUTPUT TPS</text>
     <text x="315" fill="#4f5965">│</text>
-    <text x="333" fill="#7f8995">CACHE HIT</text>
+    <text x="333" fill="#7f8995">LOCAL ARCHIVE</text>
   </g>
 
   <!-- border -->

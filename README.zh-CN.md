@@ -1,75 +1,91 @@
 <p align="center">
-  <img src="image\README\OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard 用量助手 Banner" />
+  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCode 性能观测 Banner" />
 </p>
 
-# OpenCodeGo 用量助手（油猴脚本）v0.10.0
+# OpenCode 性能观测（油猴脚本）v1.1.0
 
 中文 | **[English](README.md)**
 
-> [!WARNING]
-> **本项目已废弃，不再需要。** OpenCode 官方已在 [OpenCode 控制台](https://opencode.ai/console) 原生提供用量统计与使用历史，本油猴脚本不再维护。仓库仅作留存参考，不再发布更新。
+在 [OpenCode Console](https://opencode.ai/console/) 上增加一块专注于模型性能的悬浮仪表盘：缓存命中率、TTFT、输出 TPS、Token 构成、费用和请求明细。官方控制台继续负责账户、账单、工作区和基础用量页面，本脚本只补充官方没有提供的分析视角。
 
-在 `https://opencode.ai` 仪表盘上**全量抓取并保存用量历史**，提供**用量分析**（当天/1d/7d/30d/全部/自定义，输入输出/缓存命中率/费用）与**使用历史**。
+## 功能
 
-- 页面一致：`POST /_server`，参数走 seroval JSON body（`X-Server-Id` / `X-Server-Instance` 头）。
-- 内容指纹去重：`请求时间 + 输入/输出/推理/缓存读(+缓存写/模型/费用)` 相同 => 同一条记录。
-- 持久历史（IndexedDB）；历史完整时全量拉取**命中历史即停止翻页**，历史不完整时翻到底并标记完整。
-- 全量拉取可停止、互斥、防重复页；日志持久化；面板可拖拽调整大小并记忆；**中/英文界面**。
-- 全量拉取带退级重试：页间小间隔预防连接池/限流错误；失败自动退避重试并放慢节奏，连续成功后恢复。
+- 统计整个工作区的推理请求，支持按模型、供应商、成员或服务账号筛选。
+- 缓存命中率：`cacheRead / (input + cacheRead + cacheWrite + cacheWrite1h)`；缺失缓存写入字段按 0 处理。
+- TTFT：读取官方请求日志中的 `timeToFirstTokenMs`，展示平均值和最慢值（最大 TTFT）。
+- 输出 TPS：使用第一个输出 Token 到最后一个输出 Token 的时间窗口计算，优先使用 `firstTokenAt` / `lastTokenAt`，缺失时回退到 TTFT 与请求结束时间。
+- 图表：Token 构成、缓存命中率趋势、TTFT 平均/最慢、输出 TPS 平均/最慢和模型性能对比；模型表展示平均 TTFT、平均 TPS 和当前范围的总 tokens。
+- 趋势图支持 50%–200% 统一缩放，性能图标题旁展示平均值与最慢值，悬浮框只显示当前图表对应的字段。图表卡片会随内容自动增高，不显示内部滚动条。
+- 请求明细：状态、模型、供应商、TTFT、TPS、输入、缓存读、缓存写、输出、费用和用户；打开官方请求详情时自动关闭本面板。
+- 本地归档：IndexedDB 长期保存精简后的请求指标，不受官方 30 天日志保留期限制。
+- 概览卡片展示 TPS 单位；缓存写不为 0 时单独显示在缓存读之前。
+- 模型表中的总 tokens 和费用支持悬浮查看组成；费用按 OpenCode Go 文档单价估算并校准到实际总费用，价格缓存 3 天。
+- “同步与数据”页展示缓存的模型价格、计费时段和上下文档位；模型性能对比隐藏总 tokens 为 0 的模型。
+- CSV / JSON 导出、本地化诊断日志、面板与图标位置、面板尺寸和图表缩放记忆。
+- 首次打开自动识别浏览器语言：中文浏览器使用中文，其他语言统一使用英文；手动语言选择会保留。
+- 界面配色、卡片层级、浮层和细滚动条与官方 OpenCode 控制台保持一致。
+- 图表按钮可点击开关面板并自由拖动；点击面板外区域或按 `Escape` 关闭；面板支持八方向缩放。
 
-<p align="center">
-  <img src="image/README/1786522202431.png" width="49%" alt="界面截图 1" />
-  <img src="image/README/1786522229164.png" width="49%" alt="界面截图 2" />
-</p>
+## 数据来源与兼容性
 
-## 文件
+脚本读取当前 OpenCode Console 的直接 HTTP API：
 
-| 文件                             | 说明                |
-| -------------------------------- | ------------------- |
-| `opencodego-dashboard.user.js` | 主脚本              |
-| `seroval-core.cjs`             | seroval 编解码核心  |
-| `test-seroval-core.cjs`        | Node 单元测试       |
-| `test-userscript.py`           | Playwright 冒烟测试 |
+- `GET /console/api/user/workspaces`
+- `GET /console/api/request-logs?category=inference&since=...&limit=50...`
+
+请求日志接口需要当前工作区的 `x-org-id` 请求头，并依赖 `opencode.ai` 的同源登录 Cookie。脚本默认使用官方日志页面相同的 `limit=50`；如果服务端调整参数约束，会依次尝试 25 和 10。遇到游标失效时会自动从第一页重试一次；登录失效、权限不足、持续限流或响应结构变化时会停止同步并显示具体原因。
+
+脚本调用的字段包括：
+
+`startedAt`、`finishedAt`、`durationMs`、`timeToFirstTokenMs`、`firstTokenAt`、`lastTokenAt`、`inputTokens`、`outputTokens`、`reasoningTokens`、`cacheReadTokens`、`cacheWriteTokens`、`cacheWrite1hTokens`、`cost`、`model`、`provider`、`outcome`、`stream` 等。
+
+官方控制台更新后，若接口路径或字段发生变化，请在 [Issues](https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues) 中反馈诊断日志。
 
 ## 安装
 
-1. **安装 Tampermonkey**（如果尚未安装）：
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或兼容的 userscript 管理器。
+2. 打开 [安装脚本](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)。
+3. 在 Tampermonkey 中确认安装。
+4. 登录 `https://opencode.ai/console/`，点击图表按钮打开面板。再次点击按钮或点击面板外区域即可关闭；按钮和面板边缘都可拖动。
 
-   - [Chrome 应用商店](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
-   - [Firefox 附加组件](https://addons.mozilla.org/zh-CN/firefox/addon/tampermonkey/)
-   - [Edge 加载项](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
-2. **安装脚本**：
+TypeScript 只用于开发；发布产物仍是单一 `.user.js` 文件，不需要浏览器扩展开发环境，也不需要云端服务。
 
-   - 点击：[**安装 OpenCodeGo 仪表盘助手**](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
-   - Tampermonkey 会提示你安装 → 点击**安装**
-3. **登录** `https://opencode.ai`，脚本将自动激活。
+## 同步策略
 
-脚本会在发布新版本时**自动更新**。
+- 第一次打开面板时拉取最近 30 天日志。
+- 面板打开时立即检查增量更新；增量同步在遇到整页本地已有记录时立即停止。
+- 面板可见时，每次同步完成后在顶部居中显示紧凑提示，内容为新增数量或“已是最新”。
+- 控制台标签页可见期间每 10 分钟增量同步一次；页面隐藏时暂停。
+- 增量同步至少回看最近 1 小时，并额外前移 5 分钟覆盖本地最新记录，通过请求 `id` 去重，降低长请求延迟落库造成的漏记风险。
+- 可随时点击“立即同步”或“补齐近 30 天”。
 
-## 使用（数据 / 使用历史 / 日志）
+如果超过 30 天没有打开过控制台，缺失期间的数据无法再从官方接口补回，面板会显示历史缺口提示。
 
-- **数据页（含分析）**：
-  - 刷新工作区 / **拉取全量用量**（历史完整时命中历史提前停止）/ 清空历史（需二次确认）；
-  - 时间范围（当天/1d/7d/30d/全部/自定义）→ **开始分析** 或 **拉取最新并分析**；
-  - 指标卡片（请求/输入/输出/推理/缓存读/缓存写/费用/缓存命中率）、按模型（含每模型缓存命中率）、按天明细、导出分析报告。
-- **使用历史页**：表格化展示**近期 API 使用情况和成本**——列顺序：请求时间、模型、**输入、推理、缓存读、输出、成本($)**；
-  时间格式 24 小时制 `yyyy/MM/dd HH:mm:ss`；支持时间范围（当天/1d/7d/30d/全部/自定义）、最多显示前 300 条、**导出 CSV**。
-- **日志页**：复制/导出/清空。
-- 面板：可拖动**四边/四角**调整大小；“清空历史”按钮清空持久数据。
+## 本地数据
 
-## 其他
+数据只保存在当前浏览器配置文件的 IndexedDB 中，不发送到第三方。脚本不保存请求头、响应头、IP、地区等无关字段。旧版 `ocgo-cache` 中的历史记录会以只读方式迁移一次；旧记录没有 TTFT/TPS，只参与 Token、缓存和费用统计。
 
-- **指纹去重**：`timeCreated | inputTokens | outputTokens | reasoningTokens | cacheReadTokens | cacheWrite5mTokens | cacheWrite1hTokens | model | cost` 相同 => 同一条。
-- **持久化**：无 TTL、无过期，只有“清空历史”才删除；`complete` 标记是否完整全量。
-- **命中历史即停止**：仅当历史已完整时启用——再次拉取时当前页出现与历史指纹重合的记录即停止翻页，本次新数据与历史数据按指纹合并；**历史不完整时不会提前停止**，会一直翻到底并标记完整（避免误报“历史不完整”）。
-- **停止按钮**：任务进行中数据页显示 ⏹ 停止，点击立即中断并保留已拉部分。
+可在“同步与数据”页导出筛选明细 CSV、导出完整归档 JSON，或手动清空本地历史。
 
-## 测试
+## 开发
 
 ```powershell
-node test-seroval-core.cjs
-python test-userscript.py
+npm install
+python -m pip install -r requirements-test.txt
+python -m playwright install chromium
+npm run build
+npm test
+npm run test:e2e
+npm run typecheck
 ```
+
+- `npm run build`：将 `src/main.ts` 打包为根目录的 `opencodego-dashboard.user.js`。
+- `npm run watch`：监听源码并持续重建 userscript。
+- `npm test`：Vitest 单元测试。
+- `npm run test:e2e`：构建后用 Playwright 加载本地模拟的 OpenCode Console。
+- `npm run check`：类型检查加单元测试。
+
+开发时每次重新构建后，需要在 Tampermonkey 中重新导入本地 `opencodego-dashboard.user.js`，或使用文件导入刷新脚本。
 
 ## 许可证
 

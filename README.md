@@ -1,75 +1,91 @@
 <p align="center">
-  <img src="image\README\OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo-Dashboard Usage Assistant Banner" />
+  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCode Performance Lens Banner" />
 </p>
 
-# OpenCodeGo Usage Assistant (Userscript) v0.10.0
+# OpenCode Performance Lens (Userscript) v1.1.0
 
 **[中文](README.zh-CN.md)** | English
 
-> [!WARNING]
-> **This project is deprecated and no longer needed.** OpenCode now officially provides usage statistics and usage history in the [OpenCode Console](https://opencode.ai/console), so this userscript is no longer maintained. The repository is kept for reference only and will receive no further updates.
+Adds a performance-focused floating dashboard to the [OpenCode Console](https://opencode.ai/console/): cache hit rate, TTFT, output TPS, token mix, cost, and request-level details. The official console remains responsible for account, billing, workspace, and baseline usage views.
 
-Fully fetch and persist your usage history on the `https://opencode.ai` dashboard, with **usage analytics** (Today / 1d / 7d / 30d / All / Custom — input/output, cache hit rate, cost) and **usage history**.
+## Features
 
-- Same page contract: `POST /_server`, params sent as a seroval JSON body (with `X-Server-Id` / `X-Server-Instance` headers).
-- Content fingerprint dedup: identical `request time + input/output/reasoning/cache reads (+cache writes/model/cost)` => same record.
-- Persistent history (IndexedDB); when history is complete, full fetch **stops paging as soon as history is hit**; when incomplete, it pages to the end and marks itself complete.
-- Full fetch can be stopped, is mutually exclusive, and prevents duplicate pages; logs are persisted; the panel is draggable/resizable and remembers its size; **Chinese/English UI**.
-- Full fetch has degraded retry: a small delay between pages prevents pool/rate-limit errors; failures retry with backoff and slow the pace, recovering after consecutive successes.
+- Workspace-wide inference analytics with model, provider, member, and service-account filters.
+- Cache hit rate: `cacheRead / (input + cacheRead + cacheWrite + cacheWrite1h)`; missing write buckets count as zero.
+- TTFT from the official `timeToFirstTokenMs` field, shown as the average and the slowest sample.
+- Output TPS measured from the first output token to the last output token. Uses `firstTokenAt` / `lastTokenAt` when available and falls back to TTFT plus request completion time.
+- Charts for token mix, cache hit rate, TTFT average/slowest, output TPS average/slowest, and model performance. Model rows show average TTFT and TPS plus total tokens for the selected range.
+- Unified 50%–200% chart zoom, average/slowest summaries beside performance chart titles, and chart-specific hover details. Chart cards grow with their content instead of showing nested scrollbars.
+- Request table with status, model, provider, TTFT, TPS, input, cache read/write, output, cost, and user, plus deep links to official request details. The panel closes automatically when a detail link is opened.
+- Local IndexedDB archive that keeps compact request metrics beyond the official 30-day log retention window.
+- Overview cards show the TPS unit directly, and cache write gets its own card before cache read when nonzero.
+- Model table total tokens and cost expose hover breakdowns. Cost categories use OpenCode Go documentation prices, normalized to the actual total and cached for three days.
+- The Sync & Data tab shows the cached model pricing, billing periods, and context tiers; model performance tables omit models with zero total tokens.
+- CSV/JSON export, localized diagnostics, remembered panel, launcher, and chart-zoom state.
+- Browser language is detected on first use: Chinese locales use Chinese and all others use English. Manual language choices are remembered.
+- Colors, card layers, overlays, and thin scrollbars match the official OpenCode Console theme.
+- The chart launcher toggles the panel and can be dragged. Clicking outside the panel or pressing `Escape` closes it, and the panel supports eight-direction resizing.
 
-<p align="center">
-  <img src="image/README/1786522202431.png" width="49%" alt="Screenshot 1" />
-  <img src="image/README/1786522229164.png" width="49%" alt="Screenshot 2" />
-</p>
+## Data source and compatibility
 
-## Files
+The script uses the current direct HTTP API of OpenCode Console:
 
-| File                             | Description            |
-| -------------------------------- | ---------------------- |
-| `opencodego-dashboard.user.js` | Main userscript        |
-| `seroval-core.cjs`             | seroval codec core     |
-| `test-seroval-core.cjs`        | Node unit tests        |
-| `test-userscript.py`           | Playwright smoke tests |
+- `GET /console/api/user/workspaces`
+- `GET /console/api/request-logs?category=inference&since=...&limit=50...`
+
+The request-log endpoint requires the current workspace in `x-org-id` and relies on the same-origin `opencode.ai` session cookie. The script defaults to `limit=50`, matching the official logs page, then falls back to 25 and 10 if the server changes parameter constraints. If the cursor expires, it restarts once from page one. Session expiry, missing permission, persistent rate limiting, or contract changes stop sync with a visible reason.
+
+The API fields used by the script include:
+
+`startedAt`, `finishedAt`, `durationMs`, `timeToFirstTokenMs`, `firstTokenAt`, `lastTokenAt`, `inputTokens`, `outputTokens`, `reasoningTokens`, `cacheReadTokens`, `cacheWriteTokens`, `cacheWrite1hTokens`, `cost`, `model`, `provider`, `outcome`, and `stream`.
+
+If the console changes these routes or fields, include the diagnostics log in a [GitHub issue](https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues).
 
 ## Installation
 
-1. **Install Tampermonkey** (if not already installed):
+1. Install [Tampermonkey](https://www.tampermonkey.net/) or another compatible userscript manager.
+2. Open the [userscript](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js).
+3. Confirm installation in Tampermonkey.
+4. Sign in to `https://opencode.ai/console/` and click the chart launcher. Click it again or click outside the panel to close it; both the launcher and every panel edge can be dragged.
 
-   - [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
-   - [Firefox Add-ons](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
-   - [Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
-2. **Install the script**:
+TypeScript is build-time only. The release artifact remains a single `.user.js` file and needs no browser-extension development setup or cloud service.
 
-   - Click: [**Install OpenCodeGo Dashboard Assistant**](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
-   - Tampermonkey will prompt you to install → click **Install**
-3. **Sign in** to `https://opencode.ai` and the script will activate automatically.
+## Sync behavior
 
-The script will **auto-update** when new versions are released.
+- The first panel open fetches the last 30 days.
+- Opening the panel immediately checks for incremental updates; incremental sync stops as soon as a page contains only locally cached records.
+- While the panel is visible, each completed sync shows a compact top-center toast with the added record count or an up-to-date message.
+- While the console tab is visible, incremental sync runs every 10 minutes; it pauses when the page is hidden.
+- Incremental sync re-scans at least the last hour, plus five minutes before the latest local record, and deduplicates by request `id` to reduce gaps from long-running or delayed log writes.
+- “Sync now” and “Backfill 30 days” can be triggered manually.
 
-## Usage (Data / Usage History / Logs)
+If the console is not opened for more than 30 days, the missed period cannot be recovered from the official API. The panel reports a history gap.
 
-- **Data page (with analytics)**:
-  - Refresh workspace / **Fetch full usage** (stops early when complete history is hit) / Clear history (with confirmation);
-  - Time range (Today / 1d / 7d / 30d / All / Custom) → **Run analysis** or **Fetch latest & analyze**;
-  - Metric cards (requests / input / output / reasoning / cache read / cache write / cost / cache hit rate), per-model breakdown (including per-model cache hit rate), daily details, and analysis report export.
-- **Usage History page**: tabular view of **recent API usage and costs** — column order: request time, model, **input, reasoning, cache read, output, cost ($)**;
-  24-hour time format `yyyy/MM/dd HH:mm:ss`; supports time range (Today / 1d / 7d / 30d / All / Custom), up to 300 rows, **CSV export**.
-- **Logs page**: copy / export / clear.
-- Panel: resize by dragging **edges/corners**; the “Clear history” button clears persisted data.
+## Local data
 
-## Misc
+Data stays in the current browser profile’s IndexedDB and is not uploaded to third parties. Request and response headers, IP, and location data are not stored. Legacy `ocgo-cache` records are imported once in read-only mode; they have no TTFT/TPS and only contribute to token, cache, and cost analytics.
 
-- **Fingerprint dedup**: identical `timeCreated | inputTokens | outputTokens | reasoningTokens | cacheReadTokens | cacheWrite5mTokens | cacheWrite1hTokens | model | cost` => same record.
-- **Persistence**: no TTL, no expiry — only “Clear history” deletes; `complete` marks whether the full history has been fetched.
-- **Stop on history hit**: only active when history is complete — on a subsequent fetch, paging stops as soon as the current page contains a record matching an existing fingerprint; new data is merged with history by fingerprint; **when history is incomplete, it never stops early** — it pages to the end and marks itself complete (to avoid false “incomplete history” reports).
-- **Stop button**: while a task is running, the Data page shows ⏹ Stop; clicking it immediately aborts and keeps what has been fetched so far.
+Use the Sync & Data tab to export filtered CSV, export the full archive as JSON, or clear local history.
 
-## Testing
+## Development
 
 ```powershell
-node test-seroval-core.cjs
-python test-userscript.py
+npm install
+python -m pip install -r requirements-test.txt
+python -m playwright install chromium
+npm run build
+npm test
+npm run test:e2e
+npm run typecheck
 ```
+
+- `npm run build`: bundles `src/main.ts` into the root `opencodego-dashboard.user.js`.
+- `npm run watch`: rebuilds the userscript on source changes.
+- `npm test`: Vitest unit tests.
+- `npm run test:e2e`: builds and runs Playwright against a local mock of OpenCode Console.
+- `npm run check`: typecheck plus unit tests.
+
+After a local rebuild, re-import the generated userscript in Tampermonkey or refresh it through the file import flow.
 
 ## License
 

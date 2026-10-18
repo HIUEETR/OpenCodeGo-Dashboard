@@ -14,27 +14,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
 
-      - name: Verify version in userscript
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Python test dependencies
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-test.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Typecheck and unit tests
+        run: npm run check
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+      - name: Build userscript
+        run: npm run build
+
+      - name: Verify version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
           SCRIPT_VERSION=$(grep -oP '@version\s+\K[\d.]+' opencodego-dashboard.user.js)
-          if [ "$SCRIPT_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
-            echo "Error: Script version ($SCRIPT_VERSION) != tag version (${{ steps.version.outputs.VERSION }})"
+          if [ "$SCRIPT_VERSION" != "$VERSION" ]; then
+            echo "Error: Script version ($SCRIPT_VERSION) != tag version ($VERSION)"
             exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: opencodego-dashboard.user.js
           body: |
-            ## OpenCodeGo Dashboard Assistant v${{ steps.version.outputs.VERSION }}
+            ## OpenCode Performance Lens v${{ steps.version.outputs.VERSION }}
 
             ### Installation
-            Click: [Install/Update Script](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
+            [Install or update the userscript](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)
 
             ### Changes
-            See [commit history](https://github.com/HIUEETR/OpenCodeGo-Dashboard/commits/v${{ steps.version.outputs.VERSION }})
+            See the [commit history](https://github.com/HIUEETR/OpenCodeGo-Dashboard/commits/v${{ steps.version.outputs.VERSION }}).

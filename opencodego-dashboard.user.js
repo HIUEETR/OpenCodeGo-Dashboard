@@ -1,1902 +1,4127 @@
-﻿// ==UserScript==
-// @name         OpenCodeGo 仪表盘助手
+// ==UserScript==
+// @name         OpenCode 性能观测
 // @namespace    opencodego-dashboard
-// @version      0.10.0
-// @description  全量抓取并保存用量历史，分析（输入/输出/缓存命中率/费用）与使用历史明细；面板可拖拽调整大小；日志与开关；支持中/英文。
+// @version      1.1.0
+// @description  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
-// @match        https://opencode.ai/workspace/*
+// @match        https://opencode.ai/console/*
 // @run-at       document-start
 // @grant        none
+// @noframes
 // @homepageURL  https://github.com/HIUEETR/OpenCodeGo-Dashboard
 // @supportURL   https://github.com/HIUEETR/OpenCodeGo-Dashboard/issues
 // @updateURL    https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js
 // @downloadURL  https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js
 // ==/UserScript==
-
-(function () {
-  "use strict";
-
-  // =====================================================================
-  // 1. seroval 编解码（与 opencodego-userscript/seroval-core.cjs 保持一致）
-  // =====================================================================
-  function encodeArgs(args) {
-    const refs = new Map();
-    let counter = 0;
-    let usedRefs = false;
-    function enc(v) {
-      if (v === null || v === undefined) return { t: 2, s: 0 };
-      if (v === true) return { t: 2, s: 2 };
-      if (v === false) return { t: 2, s: 3 };
-      if (typeof v === "string") return { t: 1, s: v };
-      if (typeof v === "number") return { t: 0, s: v };
-      if (Array.isArray(v)) {
-        if (refs.has(v)) { usedRefs = true; return { t: 4, i: refs.get(v) }; }
-        const idx = counter++;
-        refs.set(v, idx);
-        return { t: 9, i: idx, l: v.length, a: v.map(enc), o: 0 };
-      }
-      if (typeof v === "object") {
-        if (refs.has(v)) { usedRefs = true; return { t: 4, i: refs.get(v) }; }
-        const idx = counter++;
-        refs.set(v, idx);
-        const keys = Object.keys(v);
-        return { t: 10, i: idx, p: { k: keys, v: keys.map((k) => enc(v[k])), s: keys.length }, o: 0 };
-      }
-      throw new Error("unsupported arg type: " + typeof v);
-    }
-    const tree = enc(Array.from(args));
-    return JSON.stringify({ t: tree, f: 31, m: usedRefs ? [1] : [] });
+"use strict";
+(() => {
+  // src/analytics.ts
+  var MINUTE = 6e4;
+  var HOUR = 60 * MINUTE;
+  var DAY = 24 * HOUR;
+  function cacheHitRate(record) {
+    const denominator = record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens + (record.cacheWrite1hTokens ?? 0);
+    return denominator > 0 ? record.cacheReadTokens / denominator : null;
   }
-
-  const NUM_RE = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
-  const IDENT_RE = /[A-Za-z_$][A-Za-z0-9_$]*/y;
-
-  function tokenize(text) {
-    const tokens = [];
-    let pos = 0;
-    while (pos < text.length) {
-      const ch = text[pos];
-      if (/\s/.test(ch)) { pos++; continue; }
-      if (text.startsWith("$R", pos)) { tokens.push(["ref"]); pos += 2; continue; }
-      if ("[]{}:(),=!".includes(ch)) { tokens.push([ch]); pos++; continue; }
-      if (ch === '"') {
-        const m = /"(?:\\.|[^"\\])*"/y;
-        m.lastIndex = pos;
-        const mm = m.exec(text);
-        if (!mm) throw new Error("bad string at " + pos);
-        tokens.push(["str", JSON.parse(mm[0])]);
-        pos = mm[0].length + pos;
-        continue;
-      }
-      NUM_RE.lastIndex = pos;
-      const nm = NUM_RE.exec(text);
-      if (nm && /[0-9]/.test(ch)) {
-        const raw = nm[0];
-        tokens.push(["num", raw.includes(".") || /[eE]/.test(raw) ? parseFloat(raw) : parseInt(raw, 10)]);
-        pos = nm.index + raw.length;
-        continue;
-      }
-      IDENT_RE.lastIndex = pos;
-      const im = IDENT_RE.exec(text);
-      if (im) {
-        tokens.push(["ident", im[0]]);
-        pos = im.index + im[0].length;
-        continue;
-      }
-      throw new Error("unexpected char " + JSON.stringify(ch) + " at " + pos);
-    }
-    return tokens;
-  }  class Parser {
-    constructor(tokens) { this.toks = tokens; this.i = 0; this.store = new Map(); }
-    peek() { return this.toks[this.i]; }
-    next() { return this.toks[this.i++]; }
-    expect(kind) {
-      const t = this.next();
-      if (t[0] !== kind) throw new Error("expected " + kind + ", got " + JSON.stringify(t));
-      return t;
-    }
-    parseValue() {
-      const t = this.peek();
-      if (!t) throw new Error("unexpected end");
-      const kind = t[0];
-      if (kind === "ref") {
-        this.next();
-        this.expect("[");
-        const idx = this.expect("num")[1];
-        this.expect("]");
-        const nxt = this.peek();
-        if (nxt && nxt[0] === "=") {
-          this.next();
-          const value = this.parseValue();
-          this.store.set(idx, value);
-          return value;
-        }
-        if (this.store.has(idx)) return this.store.get(idx);
-        throw new Error("unresolved ref $R[" + idx + "]");
-      }
-      if (kind === "{") return this.parseObject();
-      if (kind === "[") return this.parseArray();
-      if (kind === "(") { this.next(); const v = this.parseValue(); this.expect(")"); return v; }
-      if (kind === "!") {
-        this.next();
-        const nxt = this.next();
-        if (nxt[1] === 0) return true;
-        if (nxt[1] === 1) return false;
-        throw new Error("bad ! literal " + JSON.stringify(nxt));
-      }
-      if (kind === "ident") {
-        this.next();
-        const v = t[1];
-        if (v === "null" || v === "undefined") return null;
-        if (v === "true") return true;
-        if (v === "false") return false;
-        if (v === "void") { this.expect("num"); return null; }
-        if (v === "new") {
-          const name = this.expect("ident")[1];
-          if (name !== "Date") throw new Error("unsupported constructor " + name);
-          this.expect("(");
-          const s = this.expect("str")[1];
-          this.expect(")");
-          return s;
-        }
-        throw new Error("unsupported identifier " + v);
-      }
-      if (kind === "str" || kind === "num") { this.next(); return t[1]; }
-      throw new Error("unexpected token " + JSON.stringify(t));
-    }
-    parseObject() {
-      this.expect("{");
-      const obj = {};
-      if (this.peek() && this.peek()[0] === "}") { this.next(); return obj; }
-      for (;;) {
-        const k = this.next();
-        if (k[0] !== "str" && k[0] !== "ident") throw new Error("bad object key " + JSON.stringify(k));
-        this.expect(":");
-        obj[k[1]] = this.parseValue();
-        const sep = this.peek();
-        if (sep && sep[0] === ",") { this.next(); continue; }
-        if (sep && sep[0] === "}") { this.next(); return obj; }
-        throw new Error("bad object separator " + JSON.stringify(sep));
-      }
-    }
-    parseArray() {
-      this.expect("[");
-      const arr = [];
-      if (this.peek() && this.peek()[0] === "]") { this.next(); return arr; }
-      for (;;) {
-        arr.push(this.parseValue());
-        const sep = this.peek();
-        if (sep && sep[0] === ",") { this.next(); continue; }
-        if (sep && sep[0] === "]") { this.next(); return arr; }
-        throw new Error("bad array separator " + JSON.stringify(sep));
-      }
-    }
+  function totalTokenCount(metrics) {
+    return metrics.inputTokens + metrics.cacheReadTokens + metrics.cacheWriteTokens + metrics.outputTokens;
   }
-
-  function stripWrapper(expr) {
-    if (expr.startsWith("(($R=>")) return expr.slice("(($R=>".length);
-    let m = /^\(\(self\.\$R=self\.\$R\|\|\{\}\)\[[^\]]*\]=\[\],/.exec(expr);
-    if (!m) m = /^\(\(self\.\$R=.*?\]=\[\],/.exec(expr);
-    if (m) {
-      expr = expr.slice(m[0].length);
-      if (expr.startsWith("($R=>")) expr = expr.slice("($R=>".length);
-    }
-    return expr;
+  function computeTtft(record) {
+    if (record.outcome !== "succeeded" || !record.stream) return null;
+    const value = record.timeToFirstTokenMs;
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
   }
-
-  function decodeStream(body) {
-    let text = typeof body === "string" ? body : new TextDecoder().decode(body);
-    let chunks;
-    if (!text.startsWith(";0x")) {
-      chunks = [text];
-    } else {
-      chunks = [];
-      let pos = 0;
-      for (;;) {
-        const m = /;0x([0-9a-fA-F]{8});/.exec(text.slice(pos));
-        if (!m) {
-          if (text.slice(pos).trim()) throw new Error("bad chunk framing at " + pos);
-          break;
-        }
-        const size = parseInt(m[1], 16);
-        const start = pos + m.index + m[0].length;
-        chunks.push(text.slice(start, start + size));
-        pos = start + size;
-      }
-    }
-    if (!chunks.length) throw new Error("empty server-function response");
-    const parser = new Parser(tokenize(stripWrapper(chunks[0])));
-    return parser.parseValue();
+  function computeTps(record) {
+    if (record.outcome !== "succeeded" || !record.stream || record.outputTokens <= 0) return null;
+    const start = typeof record.firstTokenAt === "number" && Number.isFinite(record.firstTokenAt) ? record.firstTokenAt : typeof record.timeToFirstTokenMs === "number" && Number.isFinite(record.timeToFirstTokenMs) ? record.startedAt + record.timeToFirstTokenMs : void 0;
+    const fallbackEnd = record.finishedAt ?? (record.durationMs > 0 ? record.startedAt + record.durationMs : void 0);
+    const end = typeof record.lastTokenAt === "number" && Number.isFinite(record.lastTokenAt) ? record.lastTokenAt : fallbackEnd;
+    if (start === void 0 || end === void 0 || end <= start) return null;
+    const seconds = (end - start) / 1e3;
+    return seconds > 0 ? record.outputTokens / seconds : null;
   }
-
-  function decodeJsonOrStream(body) {
-    const text = typeof body === "string" ? body : new TextDecoder().decode(body);
-    const s = text.trimStart();
-    if (s.startsWith("{") || s.startsWith("[")) {
-      try { return JSON.parse(text); } catch (e) { /* fallthrough */ }
-    }
-    return decodeStream(text);
-  }  // =====================================================================
-  // 2. 配置
-  // =====================================================================
-  const CONFIG_KEY = "ocgo:config";
-  const LOGS_KEY = "ocgo:logs";
-  const DEFAULT_CONFIG = {
-    enabled: true,
-    maxUsagePages: 500,
-    maxPageRetries: 4,
-    lang: "auto", // auto | zh | en
-  };
-  function loadConfig() {
-    try {
-      const raw = localStorage.getItem(CONFIG_KEY);
-      if (raw) return Object.assign({}, DEFAULT_CONFIG, JSON.parse(raw));
-    } catch (e) { /* ignore */ }
-    return Object.assign({}, DEFAULT_CONFIG);
-  }
-  let config = loadConfig();
-
-  // =====================================================================
-  // 2.5 多语言支持（zh / en；默认跟随浏览器语言，可手动切换并持久化）
-  // =====================================================================
-  const I18N = {
-    zh: {
-      "lang.auto": "Auto",
-      "lang.zh": "中文",
-      "lang.en": "English",
-      "app.title": "OpenCodeGo 助手",
-      "app.close": "关闭面板",
-      "app.ready": "就绪",
-      "tabs.data": "数据",
-      "tabs.history": "使用历史",
-      "tabs.log": "日志",
-      "ws.notLoaded": "(未登录/未加载)",
-      "ws.none": "(无工作区)",
-      "ws.refresh": "刷新工作区",
-      "ws.refreshed": "✅ 工作区列表已刷新（{n} 个）",
-      "ws.refreshFail": "❌ 刷新工作区失败：未登录？请先在 opencode.ai 登录。",
-      "usage.fetchAll": "拉取全量用量",
-      "usage.clearHistory": "清空历史",
-      "usage.clearConfirm": "确认清空全部用量历史？",
-      "usage.clearConfirmYes": "确认清空",
-      "usage.clearConfirmNo": "取消",
-      "usage.stop": "⏹ 停止",
-      "range.label": "时间范围",
-      "range.from": "从",
-      "range.to": "到",
-      "range.today": "当天",
-      "range.1d": "最近1天",
-      "range.7d": "最近7天",
-      "range.30d": "最近30天",
-      "range.custom": "自定义",
-      "range.customLabel": "自定义 {from} ~ {to}",
-      "range.all": "全部",
-      "analysis.start": "开始分析",
-      "analysis.refresh": "拉取最新并分析",
-      "analysis.export": "导出分析报告",
-      "analysis.placeholder": "选择时间范围后点击“开始分析”（基于历史，不自动发起全量拉取）。",
-      "history.placeholder": "选择时间范围后自动展示使用历史（基于历史）。",
-      "history.export": "导出历史(CSV)",
-      "history.noWorkspace": "请先选择工作区。",
-      "history.noData": "暂无用量历史，请先到“数据”页点击“拉取全量用量”。",
-      "history.summary": "共 {n} 条（{label}，历史共 {m} 条）",
-      "history.limitNote": "仅显示前 {n} 条，共 {m} 条，可缩小时间范围",
-      "history.noRecords": "该时间范围内没有记录",
-      "history.col.time": "请求时间",
-      "history.col.model": "模型",
-      "history.col.input": "输入",
-      "history.col.reasoning": "推理",
-      "history.col.cacheRead": "缓存读",
-      "history.col.output": "输出",
-      "history.col.cost": "成本",
-      "history.col.costUsd": "成本($)",
-      "log.copy": "复制日志",
-      "log.export": "导出日志",
-      "log.clear": "清空日志",
-      "log.title": "日志",
-      "log.stats": "共{n}条 (E:{e} W:{w} I:{i})",
-      "status.noWorkspace": "❌ 请先选择工作区",
-      "status.taskBusy": "⚠ 已有任务“{label}”进行中，请先停止或等待完成（同一时间只允许一个查询）",
-      "status.stopRequested": "⏹ 已请求停止，正在中断当前请求...",
-      "status.fetching": "⏳ 正在分页拉取全量用量（每页50条，最多 {n} 页）...",
-      "status.fetchPage": "⏳ 第 {page} 页，已去重累计 {n} 条",
-      "status.fetchAdded": "（+新增 {n}）",
-      "status.hitHistory": "｜命中历史 {n} 条",
-      "status.fetchStopped": "⏹ 已停止：已拉取 {n} 条并保留到历史（标记为不完整）",
-      "status.completeNote": "（完整）",
-      "status.incompleteNote": "（历史不完整，可能缺更早记录；建议清空历史后完整拉取一次）",
-      "status.fetchHitHistory": "✅ 命中历史，提前停止翻页：本次拉到 {n} 条（含历史重合）已与历史合并，写入历史{note}",
-      "status.fetchDone": "✅ 全量用量拉取完成：共 {n} 条，已写入历史（完整）",
-      "status.fetchFail": "❌ 全量拉取失败：{err}",
-      "status.degraded": "｜退级中",
-      "status.historyCleared": "✅ 历史已清空",
-      "status.fetchingLatest": "⏳ 正在拉取最新全量用量...",
-      "status.fetchLatestPage": "⏳ 第 {page} 页，已累计 {n} 条",
-      "status.analysisStopped": "⏹ 已停止，基于已拉取的 {n} 条分析",
-      "status.noHistory": "⚠ 没有历史数据。请先到“数据”页点“拉取全量用量”，或点“拉取最新并分析”。",
-      "status.analysisNoHistoryHtml": "还没有用量历史。<br>1) 数据页 → <b>拉取全量用量</b>（一次完整抓取）；<br>2) 或直接点这里右上角 <b>拉取最新并分析</b>。",
-      "status.analysisDone": "✅ 分析完成：{label}，区间内 {n} 条（历史共 {m} 条）",
-      "status.taskRunning": "⏳ {label} 执行中...",
-      "status.taskStopped": "⏹ 已停止：{label}",
-      "status.taskFailed": "❌ {label} 失败：{err}（详细错误见日志）",
-      "cache.none": "没有用量历史",
-      "cache.partial": "历史不完整（仅 {n} 条，来自页面捕获，未做过全量拉取；建议点“拉取最新并分析”）",
-      "cache.ok": "持久历史（全量抓取于 {time}，共 {n} 条；无过期，手动清空才消失）",
-      "cache.incomplete": "不完整",
-      "cache.usageIncompleteTag": "用量[不完整] ",
-      "cache.usageState": "{state}{n}条 @ {time}",
-      "cache.statePrefix": "历史：",
-      "cache.stateNone": "历史：无（拉取后自动记录）",
-      "task.fetchAll": "全量用量",
-      "task.fetchLatest": "拉取最新用量",
-      "task.analyze": "分析",
-      "task.analyzeRefresh": "分析(刷新)",
-      "metric.requests": "请求数",
-      "metric.input": "输入 tokens",
-      "metric.output": "输出 tokens",
-      "metric.reasoning": "推理 tokens",
-      "metric.cacheRead": "缓存读 tokens",
-      "metric.cacheWrite": "缓存写 tokens",
-      "metric.cost": "总费用",
-      "metric.cacheHitRate": "缓存命中率",
-      "analysis.formula": "缓存命中率 = 缓存读 / (新输入 + 缓存读)。统计区间：{label}，区间内 {n} 条记录。",
-      "analysis.byModel": "按模型",
-      "analysis.byDay": "按天",
-      "analysis.noRecords": "该时间区间内没有用量记录",
-      "analysis.col.model": "模型",
-      "analysis.col.requests": "请求",
-      "analysis.col.input": "输入",
-      "analysis.col.output": "输出",
-      "analysis.col.cacheRead": "缓存读",
-      "analysis.col.cacheHitRate": "缓存命中率",
-      "analysis.col.cost": "费用",
-      "analysis.col.day": "日期",
-      "log.boot": "OpenCodeGo 助手已启动",
-      "log.disabled": "[OpenCodeGo] 总开关已关闭，脚本未注入（可在油猴管理页重新启用）",
-      "log.unknownFn": "未知函数: {name}（请更新 FN_IDS）",
-      "log.networkError": "网络错误 {name}",
-      "log.httpError": "HTTP {status} {name}",
-      "log.serverError": "服务端错误 {name}",
-      "log.decodeFail": "响应解码失败 {name}",
-      "log.rpcOk": "成功 {name}",
-      "log.duplicatePage": "第 {page} 页与上一页完全相同，判定分页失效，停止拉取",
-      "log.retryPage": "第 {page} 页请求失败，重试 {attempt}/{max}：{err}",
-      "log.degradedOn": "检测到连接池/限流类错误，进入退级模式（页间延迟 {delay}ms）",
-      "log.degradedOff": "连续 {n} 页成功，退出退级模式",
-      "log.retryExhausted": "第 {page} 页重试 {max} 次仍失败，中止拉取",
-      "log.fetchStopped": "全量拉取已停止 {ws}",
-      "log.fetchHitHistory": "全量拉取命中历史，提前停止 {ws}",
-      "log.fetchDone": "全量用量拉取完成 {ws}",
-      "log.fetchFail": "全量拉取失败",
-      "log.wsRefreshed": "工作区列表刷新: {n} 个",
-      "log.wsRefreshFail": "刷新工作区失败",
-      "log.historyExported": "历史已导出",
-      "log.analysisDone": "分析完成 {label}",
-      "log.reportExported": "分析报告已导出",
-      "log.historyRendered": "使用历史已渲染",
-      "log.taskStopRequested": "请求停止任务: {label}",
-      "log.taskStopped": "已停止: {label}",
-      "log.taskIgnored": "忽略并发任务: {label}（当前: {cur}）",
-      "log.taskFailed": "{label} 失败",
-      "log.captureDecodeFail": "捕获响应解码失败",
-      "log.captureRpc": "页面RPC: {name}",
-      "log.rowsSuffix": "（{n} 条）",
-      "log.captureHook": "fetch hook 已安装（自动捕获 /_server RPC 并入历史）",
-      "log.cacheCleared": "历史已清空",
-      "log.items": "{n} 项",
-      "log.copied": "日志已复制到剪贴板",
-      "log.copyFail": "复制失败，请手动复制",
-      "log.truncated": "...(截断)",
-    },
-    en: {
-      "lang.auto": "Auto",
-      "lang.zh": "中文",
-      "lang.en": "English",
-      "app.title": "OpenCodeGo Assistant",
-      "app.close": "Close panel",
-      "app.ready": "Ready",
-      "tabs.data": "Data",
-      "tabs.history": "Usage History",
-      "tabs.log": "Logs",
-      "ws.notLoaded": "(Not signed in / not loaded)",
-      "ws.none": "(No workspaces)",
-      "ws.refresh": "Refresh workspaces",
-      "ws.refreshed": "✅ Workspace list refreshed ({n})",
-      "ws.refreshFail": "❌ Failed to refresh workspaces: not signed in? Please sign in at opencode.ai.",
-      "usage.fetchAll": "Fetch all usage",
-      "usage.clearHistory": "Clear history",
-      "usage.clearConfirm": "Clear all usage history?",
-      "usage.clearConfirmYes": "Yes, clear",
-      "usage.clearConfirmNo": "Cancel",
-      "usage.stop": "⏹ Stop",
-      "range.label": "Time range",
-      "range.from": "From",
-      "range.to": "To",
-      "range.today": "Today",
-      "range.1d": "Last 1d",
-      "range.7d": "Last 7d",
-      "range.30d": "Last 30d",
-      "range.custom": "Custom",
-      "range.customLabel": "Custom {from} ~ {to}",
-      "range.all": "All",
-      "analysis.start": "Analyze",
-      "analysis.refresh": "Fetch latest & analyze",
-      "analysis.export": "Export report",
-      "analysis.placeholder": "Pick a time range and click “Analyze” (based on history; no automatic full fetch).",
-      "history.placeholder": "Usage history will render here after picking a time range (based on history).",
-      "history.export": "Export history (CSV)",
-      "history.noWorkspace": "Please select a workspace first.",
-      "history.noData": "No usage history yet. Go to the Data tab and click “Fetch all usage”.",
-      "history.summary": "{n} rows ({label}; {m} rows in history)",
-      "history.limitNote": "Showing first {n} of {m} rows; narrow the time range to see more",
-      "history.noRecords": "No records in this time range",
-      "history.col.time": "Time",
-      "history.col.model": "Model",
-      "history.col.input": "Input",
-      "history.col.reasoning": "Reasoning",
-      "history.col.cacheRead": "Cache read",
-      "history.col.output": "Output",
-      "history.col.cost": "Cost",
-      "history.col.costUsd": "Cost($)",
-      "log.copy": "Copy logs",
-      "log.export": "Export logs",
-      "log.clear": "Clear logs",
-      "log.title": "Logs",
-      "log.stats": "{n} entries (E:{e} W:{w} I:{i})",
-      "status.noWorkspace": "❌ Please select a workspace first",
-      "status.taskBusy": "⚠ Task “{label}” is already running; stop or wait for it first (only one query at a time)",
-      "status.stopRequested": "⏹ Stop requested, cancelling the current request...",
-      "status.fetching": "⏳ Fetching full usage page by page (50/page, up to {n} pages)...",
-      "status.fetchPage": "⏳ Page {page}: {n} rows after dedup",
-      "status.fetchAdded": " (+{n} new)",
-      "status.hitHistory": "｜hit history {n} rows",
-      "status.fetchStopped": "⏹ Stopped: fetched {n} rows and kept them in history (marked incomplete)",
-      "status.completeNote": " (complete)",
-      "status.incompleteNote": " (history incomplete; earlier records may be missing. Clear history and do a full fetch once)",
-      "status.fetchHitHistory": "✅ Hit history, stopped paging early: this run got {n} rows (incl. duplicates) merged into history{note}",
-      "status.fetchDone": "✅ Full usage fetch complete: {n} rows written to history (complete)",
-      "status.fetchFail": "❌ Full fetch failed: {err}",
-      "status.degraded": " (degraded)",
-      "status.historyCleared": "✅ History cleared",
-      "status.fetchingLatest": "⏳ Fetching the latest full usage...",
-      "status.fetchLatestPage": "⏳ Page {page}: {n} rows so far",
-      "status.analysisStopped": "⏹ Stopped; analyzing the {n} fetched rows",
-      "status.noHistory": "⚠ No history data yet. Go to the Data tab and click “Fetch all usage”, or click “Fetch latest & analyze”.",
-      "status.analysisNoHistoryHtml": "No usage history yet.<br>1) Data tab → <b>Fetch all usage</b> (one complete fetch);<br>2) or click <b>Fetch latest & analyze</b> above.",
-      "status.analysisDone": "✅ Analysis complete: {label}, {n} rows in range ({m} rows in history)",
-      "status.taskRunning": "⏳ Running {label}...",
-      "status.taskStopped": "⏹ Stopped: {label}",
-      "status.taskFailed": "❌ {label} failed: {err} (see logs for details)",
-      "cache.none": "No usage history",
-      "cache.partial": "History incomplete ({n} rows from page captures; no full fetch yet; try “Fetch latest & analyze”)",
-      "cache.ok": "Persistent history (full fetch at {time}, {n} rows; never expires, cleared only manually)",
-      "cache.incomplete": "incomplete",
-      "cache.usageIncompleteTag": "Usage[incomplete] ",
-      "cache.usageState": "{state}{n} rows @ {time}",
-      "cache.statePrefix": "History: ",
-      "cache.stateNone": "History: none (records are kept automatically after a fetch)",
-      "task.fetchAll": "full usage",
-      "task.fetchLatest": "fetch latest usage",
-      "task.analyze": "Analyze",
-      "task.analyzeRefresh": "Analyze (refresh)",
-      "metric.requests": "Requests",
-      "metric.input": "Input tokens",
-      "metric.output": "Output tokens",
-      "metric.reasoning": "Reasoning tokens",
-      "metric.cacheRead": "Cache read tokens",
-      "metric.cacheWrite": "Cache write tokens",
-      "metric.cost": "Total cost",
-      "metric.cacheHitRate": "Cache hit rate",
-      "analysis.formula": "Cache hit rate = cache read / (new input + cache read). Range: {label}; {n} rows in range.",
-      "analysis.byModel": "By model",
-      "analysis.byDay": "By day",
-      "analysis.noRecords": "No usage records in this range",
-      "analysis.col.model": "Model",
-      "analysis.col.requests": "Requests",
-      "analysis.col.input": "Input",
-      "analysis.col.output": "Output",
-      "analysis.col.cacheRead": "Cache read",
-      "analysis.col.cacheHitRate": "Cache hit rate",
-      "analysis.col.cost": "Cost",
-      "analysis.col.day": "Date",
-      "log.boot": "OpenCodeGo Assistant started",
-      "log.disabled": "[OpenCodeGo] Disabled; script not injected (re-enable in the userscript manager)",
-      "log.unknownFn": "Unknown function: {name} (update FN_IDS)",
-      "log.networkError": "Network error {name}",
-      "log.httpError": "HTTP {status} {name}",
-      "log.serverError": "Server error {name}",
-      "log.decodeFail": "Response decode failed {name}",
-      "log.rpcOk": "OK {name}",
-      "log.duplicatePage": "Page {page} is identical to the previous page; pagination seems broken, stopping",
-      "log.retryPage": "Page {page} request failed, retry {attempt}/{max}: {err}",
-      "log.degradedOn": "Pool/rate-limit error detected, entering degraded mode ({delay}ms/page)",
-      "log.degradedOff": "Exited degraded mode after {n} clean pages",
-      "log.retryExhausted": "Page {page} still failing after {max} retries, aborting fetch",
-      "log.fetchStopped": "Full usage fetch stopped {ws}",
-      "log.fetchHitHistory": "Full usage fetch hit history, stopped early {ws}",
-      "log.fetchDone": "Full usage fetch complete {ws}",
-      "log.fetchFail": "Full usage fetch failed",
-      "log.wsRefreshed": "Workspace list refreshed: {n}",
-      "log.wsRefreshFail": "Failed to refresh workspaces",
-      "log.historyExported": "History exported",
-      "log.analysisDone": "Analysis complete {label}",
-      "log.reportExported": "Analysis report exported",
-      "log.historyRendered": "Usage history rendered",
-      "log.taskStopRequested": "Stop requested for task: {label}",
-      "log.taskStopped": "Stopped: {label}",
-      "log.taskIgnored": "Concurrent task ignored: {label} (current: {cur})",
-      "log.taskFailed": "{label} failed",
-      "log.captureDecodeFail": "Failed to decode captured response",
-      "log.captureRpc": "Page RPC: {name}",
-      "log.rowsSuffix": " ({n} rows)",
-      "log.captureHook": "fetch hook installed (auto-captures /_server RPC into history)",
-      "log.cacheCleared": "History cleared",
-      "log.items": "{n} items",
-      "log.copied": "Logs copied to clipboard",
-      "log.copyFail": "Copy failed; please copy manually",
-      "log.truncated": "...(truncated)",
-    },
-  };
-
-  let langPref = config.lang === "zh" || config.lang === "en" ? config.lang : "auto";
-  let lang = langPref === "auto"
-    ? (navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en")
-    : langPref;
-
-  function t(key, params) {
-    let s = (I18N[lang] && I18N[lang][key]) || I18N.zh[key] || key;
-    if (params) {
-      for (const k in params) {
-        s = s.split("{" + k + "}").join(String(params[k]));
-      }
-    }
-    return s;
-  }
-  function saveConfig() {
-    try { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch (e) { /* ignore */ }
-  }
-  function setLang(l) {
-    langPref = l === "zh" || l === "en" ? l : "auto";
-    lang = langPref === "auto"
-      ? (navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en")
-      : langPref;
-    config.lang = langPref;
-    saveConfig();
-    if (!ui) return;
-    const panelVisible = !ui.panel.classList.contains("ocgo-hidden");
-    const activeEl = document.querySelector("#ocgo-tabs button.ocgo-active");
-    const activeTab = activeEl ? activeEl.getAttribute("data-tab") : "data";
-    const prevWs = currentWorkspace(); // 切换语言前记住当前工作区
-    ui.fab.remove();
-    ui.panel.remove();
-    ui = null;
-    buildUI();
-    if (panelVisible) ui.panel.classList.remove("ocgo-hidden");
-    populateWorkspaceSelect(ui.ws, prevWs); // 重建后从缓存恢复工作区列表与选中项
-    switchTab(activeTab === "history" || activeTab === "log" ? activeTab : "data");
-    renderCacheState();
-  }
-
-  // =====================================================================
-  // 3. 日志系统（持久化做节流，避免全量拉取时频繁写 localStorage）
-  // =====================================================================
-  const MAX_LOGS = 300;
-  const MAX_ENTRY_CHARS = 600;
-  let logBuffer = [];
-  let logPersistTimer = null;
-  try {
-    const raw = localStorage.getItem(LOGS_KEY);
-    if (raw) logBuffer = JSON.parse(raw);
-  } catch (e) { /* ignore */ }
-
-  function ts() { return new Date().toISOString(); }
-  function truncate(v) {
-    const s = typeof v === "string" ? v : safeJson(v);
-    return s.length > MAX_ENTRY_CHARS ? s.slice(0, MAX_ENTRY_CHARS) + t("log.truncated") : s;
-  }
-  function safeJson(v) {
-    try { return JSON.stringify(v); } catch (e) { return String(v); }
-  }
-  function persistLogsSoon() {
-    if (logPersistTimer) return;
-    logPersistTimer = setTimeout(() => {
-      logPersistTimer = null;
-      try { localStorage.setItem(LOGS_KEY, JSON.stringify(logBuffer)); } catch (e) { /* ignore */ }
-    }, 500);
-  }
-
-  function log(level, cat, msg, data) {
-    const entry = { t: ts(), level, cat, msg: String(msg), data: data === undefined ? null : truncate(data) };
-    logBuffer.push(entry);
-    if (logBuffer.length > MAX_LOGS) logBuffer = logBuffer.slice(-MAX_LOGS);
-    persistLogsSoon();
-    const prefix = "[OpenCodeGo][" + level + "][" + cat + "]";
-    if (level === "error") console.error(prefix, entry.msg, data === undefined ? "" : data);
-    else if (level === "warn") console.warn(prefix, entry.msg, data === undefined ? "" : data);
-    else console.log(prefix, entry.msg, data === undefined ? "" : data);
-    renderLogEntry(entry);
-    updateLogStats();
-  }
-  const info = (cat, msg, data) => log("info", cat, msg, data);
-  const warn = (cat, msg, data) => log("warn", cat, msg, data);
-  const error = (cat, msg, data) => log("error", cat, msg, data);
-
-  function clearLogs() {
-    logBuffer = [];
-    try { localStorage.removeItem(LOGS_KEY); } catch (e) { /* ignore */ }
-    const el = document.getElementById("ocgo-log-list");
-    if (el) el.innerHTML = "";
-    updateLogStats();
-  }
-
-  // =====================================================================
-  // 4. IndexedDB 历史存储层
-  //    meta = { lastFullFetchAt, lastUpdatedAt, count, complete }
-  //    - lastFullFetchAt: 仅"全量分页拉取成功完成/手动停止"时更新
-  //    - lastUpdatedAt  : 任何写入（含页面捕获 page0）都更新
-  //    - complete       : 全量成功 = true；捕获/单页写入不提升
-  // =====================================================================
-  const IDB = (() => {
-    let dbPromise = null;
-    function open() {
-      if (dbPromise) return dbPromise;
-      dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open("ocgo-cache"); // 不指定版本，兼容已存在的更高版本
-        req.onupgradeneeded = () => {
-          const db = req.result;
-          if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv");
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-      return dbPromise;
-    }
-    async function put(key, value) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction("kv", "readwrite");
-        tx.objectStore("kv").put(value, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    }
-    async function get(key) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction("kv", "readonly");
-        const req = tx.objectStore("kv").get(key);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    }
-    async function del(key) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction("kv", "readwrite");
-        tx.objectStore("kv").delete(key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    }
-    async function keysWithPrefix(prefix) {
-      const db = await open();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction("kv", "readonly");
-        const req = tx.objectStore("kv").openCursor();
-        const keys = [];
-        req.onsuccess = () => {
-          const cur = req.result;
-          if (cur) {
-            if (String(cur.key).startsWith(prefix)) keys.push(cur.key);
-            cur.continue();
-          } else resolve(keys);
-        };
-        req.onerror = () => reject(req.error);
-      });
-    }
-    return { put, get, del, keysWithPrefix };
-  })();
-
-  function usageCacheKey(ws) { return "usage:" + ws; }
-
-  // 内容指纹：请求时间 + 输入/输出/推理/缓存读（含缓存写、模型、费用）完全一致 => 视为同一条记录。
-  // 不依赖 id：分页滚动刷新时同一请求可能在不同页出现，指纹去重可稳定合并。
-  function usageFingerprint(r) {
-    return [
-      r.timeCreated, r.inputTokens, r.outputTokens, r.reasoningTokens,
-      r.cacheReadTokens, r.cacheWrite5mTokens, r.cacheWrite1hTokens,
-      r.model, r.cost,
-    ].map((v) => (v === null || v === undefined ? "" : v)).join("|");
-  }
-  function usageMetaKey(ws) { return "usage:meta:" + ws; }
-
-  // 合并写入：捕获/单页数据也调用；onlyFullFetch 为 true 时才刷新 lastFullFetchAt/complete。
-  // 写入串行化：页面捕获（full:false）与全量拉取（full:true）可能并发触发，
-  // 若不串行化，后到的捕获写入会基于旧 meta 把 complete/lastFullFetchAt 降级。
-  let cacheWriteChain = Promise.resolve();
-  async function cacheUsage(ws, records, opts) {
-    opts = opts || {};
-    if (!Array.isArray(records) || !records.length) return;
-    const run = async () => {
-      const prevMeta = await IDB.get(usageMetaKey(ws));
-      let all = (await IDB.get(usageCacheKey(ws))) || [];
-      const byFp = new Map(all.map((r) => [usageFingerprint(r), r]));
-      for (const r of records) if (r && usageFingerprint(r)) byFp.set(usageFingerprint(r), r);
-      const merged = Array.from(byFp.values());
-      await IDB.put(usageCacheKey(ws), merged);
-      const meta = {
-        lastFullFetchAt: opts.full ? Date.now() : (prevMeta && prevMeta.lastFullFetchAt) || null,
-        lastUpdatedAt: Date.now(),
-        count: merged.length,
-        complete: opts.full ? true : !!(prevMeta && prevMeta.complete),
-      };
-      await IDB.put(usageMetaKey(ws), meta);
-      return { records: merged, meta };
+  function emptySummary() {
+    return {
+      requests: 0,
+      succeeded: 0,
+      failed: 0,
+      successRate: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+      cacheHitRate: null,
+      costUsd: 0,
+      ttftAvg: null,
+      ttftSlowest: null,
+      ttftSamples: 0,
+      tpsAvg: null,
+      tpsSlowest: null,
+      tpsSamples: 0
     };
-    const p = cacheWriteChain.then(run, run);
-    cacheWriteChain = p.then(() => {}, () => {});
-    return p;
+  }
+  function newAccumulator() {
+    return { metrics: emptySummary(), ttftSum: 0, ttftSlowest: null, tpsSum: 0, tpsSlowest: null };
+  }
+  function addRecord(accumulator, record) {
+    const metrics = accumulator.metrics;
+    metrics.requests += 1;
+    if (record.outcome === "succeeded") metrics.succeeded += 1;
+    else metrics.failed += 1;
+    metrics.inputTokens += record.inputTokens;
+    metrics.outputTokens += record.outputTokens;
+    metrics.reasoningTokens += record.reasoningTokens;
+    metrics.cacheReadTokens += record.cacheReadTokens;
+    metrics.cacheWriteTokens += record.cacheWriteTokens + record.cacheWrite1hTokens;
+    metrics.totalTokens = totalTokenCount(metrics);
+    metrics.costUsd += record.costUsd;
+    const ttft = computeTtft(record);
+    if (ttft !== null) {
+      metrics.ttftSamples += 1;
+      accumulator.ttftSum += ttft;
+      accumulator.ttftSlowest = accumulator.ttftSlowest === null ? ttft : Math.max(accumulator.ttftSlowest, ttft);
+    }
+    const tps = computeTps(record);
+    if (tps !== null) {
+      metrics.tpsSamples += 1;
+      accumulator.tpsSum += tps;
+      accumulator.tpsSlowest = accumulator.tpsSlowest === null ? tps : Math.min(accumulator.tpsSlowest, tps);
+    }
+  }
+  function finishSummary(accumulator) {
+    const metrics = accumulator.metrics;
+    metrics.successRate = metrics.requests > 0 ? metrics.succeeded / metrics.requests : null;
+    metrics.cacheHitRate = cacheHitRate(metrics);
+    metrics.ttftAvg = metrics.ttftSamples > 0 ? accumulator.ttftSum / metrics.ttftSamples : null;
+    metrics.ttftSlowest = accumulator.ttftSlowest;
+    metrics.tpsAvg = metrics.tpsSamples > 0 ? accumulator.tpsSum / metrics.tpsSamples : null;
+    metrics.tpsSlowest = accumulator.tpsSlowest;
+    return metrics;
+  }
+  function matchesFilters(record, filters) {
+    if (filters.model && record.model !== filters.model) return false;
+    if (filters.provider && record.provider !== filters.provider) return false;
+    if (filters.userKey) {
+      if (filters.userKey.startsWith("account:")) {
+        if (record.serviceAccountID !== filters.userKey.slice("account:".length)) return false;
+      } else if (filters.userKey.startsWith("user:")) {
+        if (record.userID !== filters.userKey.slice("user:".length)) return false;
+      }
+    }
+    return true;
+  }
+  function localBucketStart(timestamp, bucketMs, anchor = 0) {
+    const date = new Date(timestamp);
+    if (bucketMs >= DAY) {
+      date.setHours(0, 0, 0, 0);
+      const days = Math.max(1, Math.round(bucketMs / DAY));
+      const anchorDate = new Date(anchor);
+      anchorDate.setHours(0, 0, 0, 0);
+      const offsetDays = Math.floor((date.getTime() - anchorDate.getTime()) / DAY);
+      return anchorDate.getTime() + Math.floor(offsetDays / days) * days * DAY;
+    }
+    if (bucketMs >= HOUR) {
+      date.setMinutes(0, 0, 0);
+      return date.getTime();
+    }
+    date.setSeconds(0, 0);
+    const remainder = date.getMinutes() % Math.max(1, Math.round(bucketMs / MINUTE));
+    date.setMinutes(date.getMinutes() - remainder);
+    return date.getTime();
+  }
+  function averageBucketMetric(buckets, select) {
+    let sum = 0;
+    let count = 0;
+    for (const bucket of buckets) {
+      const value = select(bucket);
+      if (value === null || !Number.isFinite(value)) continue;
+      sum += value;
+      count += 1;
+    }
+    return count > 0 ? sum / count : null;
+  }
+  function tokenRateForRange(buckets, from, to) {
+    if (!buckets.length) return null;
+    if (!buckets.some((bucket) => bucket.requests > 0)) return null;
+    const first = buckets[0]?.start;
+    const last = buckets[buckets.length - 1]?.end;
+    const start = from > 0 ? from : first;
+    const end = from > 0 && to > from ? to : last;
+    if (start === void 0 || end === void 0 || end <= start) return null;
+    const span = end - start;
+    const unit = span <= DAY ? "h" : "d";
+    const unitMs = unit === "h" ? HOUR : DAY;
+    const total = buckets.reduce((sum, bucket) => sum + bucket.totalTokens, 0);
+    return { value: total / (span / unitMs), unit };
+  }
+  function chooseBucketMs(from, to) {
+    const span = Math.max(0, to - from);
+    if (span <= HOUR) return 5 * MINUTE;
+    if (span <= DAY) return HOUR;
+    if (span <= 30 * DAY) return DAY;
+    if (span <= 180 * DAY) return 7 * DAY;
+    return 30 * DAY;
+  }
+  function makeTimeRange(preset, customFrom, customTo, now = Date.now()) {
+    let from = now - 7 * DAY;
+    let to = now;
+    if (preset === "1h") from = now - HOUR;
+    else if (preset === "24h") from = now - DAY;
+    else if (preset === "7d") from = now - 7 * DAY;
+    else if (preset === "30d") from = now - 30 * DAY;
+    else if (preset === "all") from = 0;
+    else if (preset === "custom") {
+      from = typeof customFrom === "number" && Number.isFinite(customFrom) ? customFrom : now - 7 * DAY;
+      to = typeof customTo === "number" && Number.isFinite(customTo) ? customTo : now;
+      if (to < from) [from, to] = [to, from];
+    }
+    return { preset, from, to, label: preset, bucketMs: chooseBucketMs(from, to) };
+  }
+  function aggregateRecords(records, filters, from, to, requestedBucketMs) {
+    const bucketMs = requestedBucketMs ?? chooseBucketMs(from, to);
+    const filtered = records.filter(
+      (record) => record.category === "inference" && record.startedAt >= from && record.startedAt <= to && matchesFilters(record, filters)
+    );
+    const bucketAnchor = filtered.length ? localBucketStart(from === 0 ? Math.min(...filtered.map((item) => item.startedAt)) : from, DAY) : localBucketStart(from, DAY);
+    const total = newAccumulator();
+    const modelAccumulators = /* @__PURE__ */ new Map();
+    const bucketAccumulators = /* @__PURE__ */ new Map();
+    for (const record of filtered) {
+      addRecord(total, record);
+      const modelKey = `${record.provider}\0${record.model}`;
+      let modelAccumulator = modelAccumulators.get(modelKey);
+      if (!modelAccumulator) {
+        modelAccumulator = { ...newAccumulator(), model: record.model, provider: record.provider };
+        modelAccumulators.set(modelKey, modelAccumulator);
+      }
+      addRecord(modelAccumulator, record);
+      const bucketStart = localBucketStart(record.startedAt, bucketMs, bucketAnchor);
+      let bucketAccumulator = bucketAccumulators.get(bucketStart);
+      if (!bucketAccumulator) {
+        bucketAccumulator = newAccumulator();
+        bucketAccumulators.set(bucketStart, bucketAccumulator);
+      }
+      addRecord(bucketAccumulator, record);
+    }
+    const models = [...modelAccumulators.values()].map((accumulator) => ({
+      ...finishSummary(accumulator),
+      model: accumulator.model,
+      provider: accumulator.provider
+    })).sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
+    const buckets = [];
+    if (from !== 0 || filtered.length > 0) {
+      const firstTimestamp = from === 0 ? Math.min(...filtered.map((record) => record.startedAt)) : from;
+      const first = localBucketStart(firstTimestamp, bucketMs, bucketAnchor);
+      for (let start = first; start < to && buckets.length < 5e3; start += bucketMs) {
+        const accumulator = bucketAccumulators.get(start) ?? newAccumulator();
+        const summary = finishSummary(accumulator);
+        buckets.push({
+          start,
+          end: Math.min(to, start + bucketMs),
+          requests: summary.requests,
+          succeeded: summary.succeeded,
+          failed: summary.failed,
+          inputTokens: summary.inputTokens,
+          outputTokens: summary.outputTokens,
+          reasoningTokens: summary.reasoningTokens,
+          cacheReadTokens: summary.cacheReadTokens,
+          cacheWriteTokens: summary.cacheWriteTokens,
+          totalTokens: summary.totalTokens,
+          costUsd: summary.costUsd,
+          cacheHitRate: summary.cacheHitRate,
+          ttftAvg: summary.ttftAvg,
+          ttftSlowest: summary.ttftSlowest,
+          ttftSamples: summary.ttftSamples,
+          tpsAvg: summary.tpsAvg,
+          tpsSlowest: summary.tpsSlowest,
+          tpsSamples: summary.tpsSamples
+        });
+      }
+    }
+    return {
+      records: filtered.sort((a, b) => b.startedAt - a.startedAt),
+      summary: finishSummary(total),
+      models,
+      buckets
+    };
+  }
+  function filterOptions(records) {
+    const models = /* @__PURE__ */ new Set();
+    const providers = /* @__PURE__ */ new Set();
+    const users = /* @__PURE__ */ new Map();
+    for (const record of records) {
+      if (record.model) models.add(record.model);
+      if (record.provider) providers.add(record.provider);
+      if (record.serviceAccountID) users.set(`account:${record.serviceAccountID}`, `Account · ${record.serviceAccountID}`);
+      else if (record.userID) users.set(`user:${record.userID}`, `User · ${record.userID}`);
+    }
+    return {
+      models: [...models].sort(),
+      providers: [...providers].sort(),
+      users: [...users.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label))
+    };
   }
 
-  async function loadUsage(ws) {
-    const meta = await IDB.get(usageMetaKey(ws));
-    const records = (await IDB.get(usageCacheKey(ws))) || [];
-    return { records, meta };
-  }
-
-
-  async function clearCache() {
-    const keys = await IDB.keysWithPrefix("");
-    for (const k of keys) await IDB.del(k);
-    info("cache", t("log.cacheCleared"), t("log.items", { n: keys.length }));
-  }  // =====================================================================
-  // 5. 服务端函数 ID（2026-08-10 快照）
-  // =====================================================================
-  // 只保留实际用到的服务端函数
-  const FN_IDS = {
-    "workspaces": "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f",
-    // usage.list：bfd684bf 是 usage 页面真正的分页函数（参数 [ws, page]）。
-    // 注意 6262ba54 是同名的 NewUserSection 查询（只传 [ws]，不能翻页），不要用。
-    "usage.list": "bfd684bfc2e4eed05cd0b518f5e4eafd3f3376e3938abb9e536e7c03df831e5c",
+  // src/api.ts
+  var ApiError = class extends Error {
+    kind;
+    status;
+    code;
+    retryAfterMs;
+    constructor(kind, message, status, code, retryAfterMs2) {
+      super(message);
+      this.name = "ApiError";
+      this.kind = kind;
+      this.status = status;
+      this.code = code;
+      this.retryAfterMs = retryAfterMs2;
+    }
   };
-  function buildNameById() {
-    const m = {};
-    for (const k in FN_IDS) m[FN_IDS[k]] = k;
-    return m;
+  function buildURL(path, query) {
+    const url = new URL(`/console${path}`, location.origin);
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== void 0 && value !== null && value !== "") {
+          url.searchParams.set(key, String(value));
+        }
+      }
+    }
+    return url.toString();
   }
-  const FN_NAME_BY_ID = buildNameById();
-
-  // =====================================================================
-  // 6. RPC 调用（支持 AbortSignal；成功日志只记摘要，避免日志膨胀）
-  // =====================================================================
-  let instanceCounter = 0;
-  async function rpcCall(name, args, signal) {
-    const id = FN_IDS[name];
-    if (!id) throw new Error(t("log.unknownFn", { name: name }));
-    const encoded = encodeArgs(args);
-    const url = location.origin + "/_server";
-    const instance = "server-fn:tm" + instanceCounter++;
-    let res;
+  async function readError(response) {
+    const raw = await response.text().catch(() => "");
+    if (!raw) return { message: response.statusText || `HTTP ${response.status}` };
     try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "X-Server-Id": id,
-          "X-Server-Instance": instance,
-          "Content-Type": "application/json",
-          "Accept": "*/*",
-        },
-        body: encoded, // seroval 编码的参数数组（与页面一致）
+      const parsed = JSON.parse(raw);
+      const message = typeof parsed.message === "string" && parsed.message || typeof parsed._tag === "string" && parsed._tag || response.statusText || `HTTP ${response.status}`;
+      const code = typeof parsed.code === "string" ? parsed.code : void 0;
+      return { message, code };
+    } catch {
+      return { message: raw.slice(0, 500) || response.statusText || `HTTP ${response.status}` };
+    }
+  }
+  function retryAfterMs(response) {
+    const raw = response.headers.get("retry-after");
+    if (!raw) return void 0;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1e3);
+    const date = Date.parse(raw);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : void 0;
+  }
+  function classifyError(status, response, body) {
+    if (status === 401) return new ApiError("session", body.message, status, body.code);
+    if (status === 403) return new ApiError("permission", body.message, status, body.code);
+    if (status === 409) return new ApiError("cursor", body.message, status, body.code);
+    if (status === 429) return new ApiError("rate-limit", body.message, status, body.code, retryAfterMs(response));
+    if (status === 400 || status === 422) return new ApiError("bad-request", body.message, status, body.code);
+    return new ApiError("server", body.message, status, body.code);
+  }
+  async function requestJson(path, options = {}) {
+    const headers = {
+      Accept: "application/json"
+    };
+    if (options.workspaceID) headers["x-org-id"] = options.workspaceID;
+    let response;
+    try {
+      response = await fetch(buildURL(path, options.query), {
+        method: "GET",
         credentials: "same-origin",
-        signal: signal || undefined,
+        cache: "no-store",
+        headers,
+        signal: options.signal
       });
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e; // 停止任务，不算错误
-      error("rpc", t("log.networkError", { name: name }), { url, message: String(e && e.message || e) });
-      throw e;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      throw new ApiError("network", error instanceof Error ? error.message : String(error));
     }
-    if (res.status >= 400) {
-      const body = (await res.text()).slice(0, 500);
-      error("rpc", t("log.httpError", { status: res.status, name: name }), { url, body });
-      throw new Error("HTTP " + res.status + ": " + name + " -> " + body);
+    if (!response.ok) {
+      const body = await readError(response);
+      throw classifyError(response.status, response, body);
     }
-    const text = await res.text();
-    if (res.headers.get("X-Error")) {
-      error("rpc", t("log.serverError", { name: name }), { url, body: text.slice(0, 500) });
-      throw new Error("server error: " + text.slice(0, 300));
-    }
-    let data;
+    let parsed;
     try {
-      data = decodeJsonOrStream(text);
-    } catch (e) {
-      error("rpc", t("log.decodeFail", { name: name }), { url, message: String(e && e.message || e), body: text.slice(0, 500) });
-      throw e;
+      parsed = await response.json();
+    } catch {
+      throw new ApiError("contract", "The API returned a non-JSON response.", response.status);
     }
-    // 摘要：数组记条数，对象记 key 列表，避免每条 50 条完整记录撑爆日志
-    const summary = Array.isArray(data)
-      ? { n: data.length, first: data[0] ? data[0].timeCreated || data[0].id : undefined }
-      : (data && typeof data === "object" ? { keys: Object.keys(data).slice(0, 8) } : data);
-    info("rpc", t("log.rpcOk", { name: name }), summary);
-    return data;
+    return parsed;
+  }
+  async function listWorkspaces(signal) {
+    const data = await requestJson("/api/user/workspaces", { signal });
+    if (!Array.isArray(data)) {
+      throw new ApiError("contract", "Workspace response was not an array.");
+    }
+    return data.filter((item) => Boolean(item) && typeof item === "object").map((item) => ({
+      id: typeof item.id === "string" ? item.id : "",
+      name: typeof item.name === "string" ? item.name : "",
+      role: typeof item.role === "string" ? item.role : void 0,
+      memberCount: typeof item.memberCount === "number" ? item.memberCount : void 0,
+      avatarUrl: typeof item.avatarUrl === "string" ? item.avatarUrl : null
+    })).filter((item) => item.id.startsWith("wrk_"));
+  }
+  function validateRequestLogPage(data) {
+    if (!data || typeof data !== "object") {
+      throw new ApiError("contract", "Request log response was not an object.");
+    }
+    const record = data;
+    if (!Array.isArray(record.items)) {
+      throw new ApiError("contract", "Request log response did not contain an items array.");
+    }
+    const items = record.items.filter((item) => Boolean(item) && typeof item === "object");
+    if (items.length !== record.items.length) {
+      throw new ApiError("contract", "Request log response contained a malformed item.");
+    }
+    if (!Object.prototype.hasOwnProperty.call(record, "nextCursor") || !(record.nextCursor === null || typeof record.nextCursor === "string")) {
+      throw new ApiError("contract", "Request log response contained an invalid nextCursor.");
+    }
+    if (typeof record.until !== "number" || !Number.isFinite(record.until)) {
+      throw new ApiError("contract", "Request log response contained an invalid until timestamp.");
+    }
+    if (record.retentionDays !== void 0 && (typeof record.retentionDays !== "number" || !Number.isFinite(record.retentionDays) || record.retentionDays <= 0)) {
+      throw new ApiError("contract", "Request log response contained an invalid retentionDays value.");
+    }
+    return {
+      items,
+      nextCursor: record.nextCursor,
+      until: record.until,
+      retentionDays: typeof record.retentionDays === "number" ? record.retentionDays : 30
+    };
+  }
+  async function listRequestLogs(workspaceID, query, signal) {
+    const params = {
+      category: "inference",
+      since: Math.max(0, Math.floor(query.since)),
+      until: query.until === void 0 ? void 0 : Math.floor(query.until),
+      cursor: query.cursor,
+      limit: query.limit,
+      outcome: query.outcome,
+      model: query.model,
+      provider: query.provider,
+      userID: query.userID,
+      serviceAccountID: query.serviceAccountID,
+      product: query.product,
+      protocol: query.protocol
+    };
+    const data = await requestJson("/api/request-logs", {
+      query: params,
+      workspaceID,
+      signal
+    });
+    return validateRequestLogPage(data);
+  }
+  function installRequestLogCapture(onPage) {
+    const win2 = window;
+    if (win2.__ocgoLensCaptureInstalled || typeof window.fetch !== "function") return;
+    win2.__ocgoLensCaptureInstalled = true;
+    const original = window.fetch.bind(window);
+    window.fetch = function capturedFetch(input, init) {
+      const responsePromise = original(input, init);
+      try {
+        const url = new URL(
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+          location.origin
+        );
+        if (url.origin !== location.origin || url.pathname !== "/console/api/request-logs" || url.searchParams.get("category") !== "inference") {
+          return responsePromise;
+        }
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : void 0));
+        const workspaceID = headers.get("x-org-id") ?? "";
+        if (!workspaceID.startsWith("wrk_")) return responsePromise;
+        void responsePromise.then(async (response) => {
+          if (!response.ok) return;
+          const data = await response.clone().json();
+          const page = validateRequestLogPage(data);
+          onPage({ workspaceID, page });
+        }).catch(() => void 0);
+      } catch {
+      }
+      return responsePromise;
+    };
+  }
+  async function listUsagePrincipals(workspaceID, signal) {
+    const principals = [];
+    let page = 1;
+    let pageCount = 1;
+    while (page <= pageCount && page <= 20) {
+      const data = await requestJson("/api/usage/users", {
+        query: { range: "30d", page, pageSize: 100, costOrder: "desc" },
+        workspaceID,
+        signal
+      });
+      if (!data || typeof data !== "object") {
+        throw new ApiError("contract", "Usage principals response was not an object.");
+      }
+      const record = data;
+      if (!Array.isArray(record.items)) {
+        throw new ApiError("contract", "Usage principals response did not contain an items array.");
+      }
+      if (record.items.some((item) => !item || typeof item !== "object")) {
+        throw new ApiError("contract", "Usage principals response contained a malformed item.");
+      }
+      principals.push(...record.items.map((item) => {
+        const value = item;
+        return {
+          userId: typeof value.userId === "string" ? value.userId : "",
+          serviceUserId: typeof value.serviceUserId === "string" ? value.serviceUserId : "",
+          principalType: typeof value.principalType === "string" ? value.principalType : "",
+          email: typeof value.email === "string" ? value.email : "",
+          name: typeof value.name === "string" ? value.name : "",
+          avatarUrl: typeof value.avatarUrl === "string" ? value.avatarUrl : null
+        };
+      }));
+      pageCount = typeof record.pageCount === "number" && Number.isFinite(record.pageCount) && record.pageCount > 0 ? Math.floor(record.pageCount) : page;
+      page += 1;
+    }
+    return principals;
   }
 
-  // 可重试错误判定：连接池/限流/瞬时 5xx/网络类错误可重试；解码失败、未知函数、用户中止不算
-  function isRetryableError(e) {
-    if (!e) return false;
-    if (e && e.name === "AbortError") return false;
-    const msg = String(e && e.message || e);
-    return /HTTP (429|5\d\d)/.test(msg) ||
-      /ResourceExhausted|connection limit|transaction pool|rate limit|too many|timed out|timeout|ECONNRESET|Failed to fetch|network error|socket/.test(msg);
+  // src/i18n.ts
+  var zh = {
+    "app.title": "OpenCode 性能观测",
+    "app.subtitle": "缓存命中率 · TTFT · TPS",
+    "app.open": "打开性能观测",
+    "app.close": "关闭",
+    "app.language": "语言",
+    "tabs.overview": "概览",
+    "tabs.charts": "趋势图",
+    "tabs.requests": "请求明细",
+    "tabs.data": "同步与数据",
+    "range.1h": "近 1 小时",
+    "range.24h": "近 24 小时",
+    "range.7d": "近 7 天",
+    "range.30d": "近 30 天",
+    "range.all": "全部本地",
+    "range.custom": "自定义",
+    "range.label": "范围",
+    "range.from": "开始",
+    "range.to": "结束",
+    "filter.model": "模型",
+    "filter.provider": "供应商",
+    "filter.user": "用户",
+    "filter.all": "全部",
+    "filter.clear": "清除筛选",
+    "metric.requests": "请求",
+    "metric.successRate": "成功率",
+    "metric.cost": "费用",
+    "metric.input": "输入 tokens",
+    "metric.output": "输出 tokens",
+    "metric.cacheRead": "缓存读",
+    "metric.cacheWrite": "缓存写",
+    "metric.cacheHitRate": "缓存命中率",
+    "metric.ttft": "TTFT（平均 / 最慢）",
+    "metric.tps": "输出 TPS（平均 / 最慢）",
+    "metric.samples": "{n} 个有效样本",
+    "metric.failures": "{n} 个失败/取消",
+    "chart.tokens": "Token 构成",
+    "chart.cache": "缓存命中率",
+    "chart.ttft": "TTFT 趋势",
+    "chart.tps": "输出 TPS 趋势",
+    "chart.models": "模型性能对比",
+    "chart.empty": "当前范围内没有可绘制的数据",
+    "chart.zoom": "图表缩放",
+    "chart.zoomIn": "放大图表",
+    "chart.zoomOut": "缩小图表",
+    "chart.zoomReset": "重置图表缩放",
+    "chart.avgTokens": "平均 {value} tokens/{unit}",
+    "chart.avgCache": "平均 {value}",
+    "chart.avgTtft": "平均 {avg} · 最慢 {slowest}",
+    "chart.avgTps": "平均 {avg} · 最慢 {slowest}",
+    "chart.unitHour": "h",
+    "chart.unitDay": "d",
+    "chart.input": "输入",
+    "chart.cacheRead": "缓存读",
+    "chart.cacheWrite": "缓存写",
+    "chart.output": "输出",
+    "chart.average": "平均",
+    "chart.slowest": "最慢",
+    "table.model": "模型",
+    "table.provider": "供应商",
+    "table.requests": "请求",
+    "table.totalTokens": "总 tokens",
+    "table.success": "成功",
+    "table.hitRate": "命中率",
+    "table.ttft": "TTFT",
+    "table.tps": "TPS",
+    "table.ttftAvg": "TTFT 平均",
+    "table.ttftSlowest": "TTFT 最慢",
+    "table.tpsAvg": "TPS 平均",
+    "table.tpsSlowest": "TPS 最慢",
+    "table.input": "输入",
+    "table.cacheRead": "缓存读",
+    "table.cacheWrite": "缓存写",
+    "table.output": "输出",
+    "table.reasoning": "推理",
+    "table.cost": "费用",
+    "table.time": "时间",
+    "table.status": "状态",
+    "table.user": "用户",
+    "table.open": "官方详情",
+    "tooltip.successFailed": "成功 / 失败",
+    "tooltip.ttftSamples": "TTFT 样本",
+    "tooltip.tpsSamples": "TPS 样本",
+    "table.page": "第 {page} / {pages} 页",
+    "table.prev": "上一页",
+    "table.next": "下一页",
+    "table.empty": "当前筛选条件下没有请求记录",
+    "table.emptyHint": "调整时间范围或筛选条件后重试。",
+    "status.never": "尚未同步",
+    "status.syncing": "同步中：第 {page} 页，已保存 {n} 条",
+    "status.synced": "同步完成：{n} 条",
+    "status.stopped": "同步已停止",
+    "status.syncNow": "立即同步",
+    "status.syncFull": "补齐近 30 天",
+    "status.stop": "停止",
+    "status.legacy": "旧版历史",
+    "status.records": "{n} 条本地记录",
+    "status.coverage": "本地覆盖：{from} — {to}",
+    "status.official": "官方日志保留期：{n} 天",
+    "status.lastSync": "最近同步：{time}",
+    "status.gap": "检测到历史缺口：上次同步距现在超过 {n} 天，缺口期间的数据已无法从官方补回。",
+    "status.partial": "同步尚未完整完成；可点击“补齐近 30 天”重试。",
+    "status.captured": "已从官方日志页面捕获 {n} 条记录",
+    "data.exportCsv": "导出筛选明细 CSV",
+    "data.exportJson": "导出归档 JSON",
+    "data.clear": "清空本地历史",
+    "data.clearConfirm": "再次点击确认清空",
+    "data.storage": "浏览器存储占用：{size}",
+    "data.privacy": "数据仅保存在当前浏览器 IndexedDB，不会上传到第三方。",
+    "data.diagnostics": "诊断日志",
+    "data.copyLogs": "复制日志",
+    "data.noLogs": "暂无日志",
+    "data.workspace": "当前工作区",
+    "data.actions": "操作",
+    "data.recordCount": "本地记录",
+    "data.retentionNote": "官方只保留 30 天；更早数据来自本地归档。",
+    "data.pricingTitle": "缓存模型价格",
+    "data.pricingHint": "OpenCode Go 官方单价",
+    "data.pricingLoading": "正在读取价格缓存…",
+    "data.pricingEmpty": "暂无可用价格缓存。",
+    "data.pricingError": "价格刷新失败，继续使用现有缓存：{error}",
+    "data.pricingMeta": "缓存于 {time} · {n} 个模型",
+    "data.pricingSource": "查看官方价格 ↗",
+    "data.pricingModel": "模型",
+    "data.pricingPeriod": "计费时段",
+    "data.pricingContext": "上下文档位",
+    "data.pricingInput": "输入 / 1M",
+    "data.pricingOutput": "输出 / 1M",
+    "data.pricingCacheRead": "缓存读 / 1M",
+    "data.pricingCacheWrite": "缓存写 / 1M",
+    "data.pricingPeak": "高峰",
+    "data.pricingOffPeak": "非高峰",
+    "data.pricingAllDay": "全天",
+    "data.pricingAllContext": "全部",
+    "data.customInvalid": "自定义时间范围无效",
+    "error.title": "无法加载数据",
+    "error.session": "登录已失效，请刷新页面并重新登录 OpenCode 控制台。",
+    "error.permission": "当前账号没有访问工作区请求日志的权限。",
+    "error.cursor": "分页游标已失效，已停止本次同步；再次同步会从第一页重新开始。",
+    "error.rate": "请求过于频繁，已暂停同步；稍后重试。",
+    "error.badRequest": "服务端拒绝了当前查询参数，已尝试兼容页大小。",
+    "error.contract": "接口结构已变化，已停止同步以避免写入错误数据。",
+    "error.network": "网络请求失败，请检查连接后重试。",
+    "error.unknown": "发生未知错误：{message}",
+    "error.workspace": "请先打开一个 OpenCode 工作区。",
+    "error.loading": "正在加载本地数据…",
+    "empty.title": "还没有本地记录",
+    "empty.description": "点击“立即同步”从官方控制台拉取最近 30 天请求日志。",
+    "legacy.note": "旧版记录没有 TTFT/TPS，只参与 token、缓存和费用统计。",
+    "badge.legacy": "旧版",
+    "badge.success": "成功",
+    "badge.failed": "失败",
+    "badge.rejected": "拒绝",
+    "badge.cancelled": "取消",
+    "log.level.info": "信息",
+    "log.level.warn": "警告",
+    "log.level.error": "错误",
+    "log.mounted": "性能观测面板已加载",
+    "log.migrated": "已迁移 {n} 条旧版用量记录",
+    "log.migrationSkipped": "旧版数据迁移跳过：{error}",
+    "log.principalSkipped": "用户信息加载跳过：{error}",
+    "log.workspace": "工作区：{name}",
+    "log.workspaceListFailed": "工作区列表加载失败：{error}",
+    "log.syncBackfillStart": "开始补齐近 30 天日志",
+    "log.syncIncrementalStart": "开始增量同步",
+    "log.syncComplete": "同步完成：抓取 {fetched} 条，新增 {added} 条，共 {pages} 页",
+    "log.syncCached": "增量同步命中本地缓存：新增 {added} 条，共 {pages} 页",
+    "log.syncStopped": "同步已被用户停止",
+    "log.error": "错误：{error}",
+    "log.exportCsv": "已导出 {n} 条筛选记录为 CSV",
+    "log.exportJson": "已导出 {n} 条归档记录为 JSON",
+    "log.legacyCleanupSkipped": "旧版缓存清理跳过：{error}",
+    "log.historyCleared": "本地历史已清空",
+    "log.diagnosticsCopied": "诊断日志已复制",
+    "log.ready": "性能观测 v{version} 已就绪",
+    "log.bootFailed": "启动失败：{error}",
+    "log.captureFailed": "日志捕获失败：{error}",
+    "log.pricingUpdated": "已缓存 {n} 个模型的 Go 价格",
+    "log.pricingRefreshFailed": "Go 价格刷新失败：{error}",
+    "sync.toast.updated": "已更新 {n} 条数据",
+    "sync.toast.latest": "已是最新，没有新数据",
+    "tooltip.inputCost": "输入费用",
+    "tooltip.outputCost": "输出费用",
+    "tooltip.cacheReadCost": "缓存读费用",
+    "tooltip.cacheWriteCost": "缓存写费用",
+    "tooltip.tokensTitle": "{model} · 总 tokens",
+    "tooltip.costTitle": "{model} · 费用",
+    "tooltip.estimated": "估算",
+    "tooltip.estimatedHint": "按官方 Go 单价计算，并校准到实际总费用。",
+    "tooltip.costUnavailable": "该模型暂无官方 Go 分类价格。"
+  };
+  var en = {
+    "app.title": "OpenCode Performance Lens",
+    "app.subtitle": "Cache hit · TTFT · TPS",
+    "app.open": "Open performance lens",
+    "app.close": "Close",
+    "app.language": "Language",
+    "tabs.overview": "Overview",
+    "tabs.charts": "Charts",
+    "tabs.requests": "Requests",
+    "tabs.data": "Sync & Data",
+    "range.1h": "Last hour",
+    "range.24h": "Last 24 hours",
+    "range.7d": "Last 7 days",
+    "range.30d": "Last 30 days",
+    "range.all": "All local",
+    "range.custom": "Custom",
+    "range.label": "Range",
+    "range.from": "From",
+    "range.to": "To",
+    "filter.model": "Model",
+    "filter.provider": "Provider",
+    "filter.user": "User",
+    "filter.all": "All",
+    "filter.clear": "Clear filters",
+    "metric.requests": "Requests",
+    "metric.successRate": "Success rate",
+    "metric.cost": "Cost",
+    "metric.input": "Input tokens",
+    "metric.output": "Output tokens",
+    "metric.cacheRead": "Cache read",
+    "metric.cacheWrite": "Cache write",
+    "metric.cacheHitRate": "Cache hit rate",
+    "metric.ttft": "TTFT (average / slowest)",
+    "metric.tps": "Output TPS (average / slowest)",
+    "metric.samples": "{n} valid samples",
+    "metric.failures": "{n} failed/cancelled",
+    "chart.tokens": "Token mix",
+    "chart.cache": "Cache hit rate",
+    "chart.ttft": "TTFT trend",
+    "chart.tps": "Output TPS trend",
+    "chart.models": "Model performance",
+    "chart.empty": "No chartable data in this range",
+    "chart.zoom": "Chart zoom",
+    "chart.zoomIn": "Zoom in charts",
+    "chart.zoomOut": "Zoom out charts",
+    "chart.zoomReset": "Reset chart zoom",
+    "chart.avgTokens": "Avg {value} tokens/{unit}",
+    "chart.avgCache": "Avg {value}",
+    "chart.avgTtft": "Avg {avg} · slowest {slowest}",
+    "chart.avgTps": "Avg {avg} · slowest {slowest}",
+    "chart.unitHour": "h",
+    "chart.unitDay": "d",
+    "chart.input": "Input",
+    "chart.cacheRead": "Cache read",
+    "chart.cacheWrite": "Cache write",
+    "chart.output": "Output",
+    "chart.average": "Average",
+    "chart.slowest": "Slowest",
+    "table.model": "Model",
+    "table.provider": "Provider",
+    "table.requests": "Requests",
+    "table.totalTokens": "Total tokens",
+    "table.success": "Success",
+    "table.hitRate": "Hit rate",
+    "table.ttft": "TTFT",
+    "table.tps": "TPS",
+    "table.ttftAvg": "TTFT average",
+    "table.ttftSlowest": "TTFT slowest",
+    "table.tpsAvg": "TPS average",
+    "table.tpsSlowest": "TPS slowest",
+    "table.input": "Input",
+    "table.cacheRead": "Cache read",
+    "table.cacheWrite": "Cache write",
+    "table.output": "Output",
+    "table.reasoning": "Reasoning",
+    "table.cost": "Cost",
+    "table.time": "Time",
+    "table.status": "Status",
+    "table.user": "User",
+    "table.open": "Official detail",
+    "tooltip.successFailed": "Success / failed",
+    "tooltip.ttftSamples": "TTFT samples",
+    "tooltip.tpsSamples": "TPS samples",
+    "table.page": "Page {page} / {pages}",
+    "table.prev": "Previous",
+    "table.next": "Next",
+    "table.empty": "No requests match the current filters",
+    "table.emptyHint": "Adjust the time range or filters and try again.",
+    "status.never": "Not synced yet",
+    "status.syncing": "Syncing page {page}, {n} saved",
+    "status.synced": "Sync complete: {n} records",
+    "status.stopped": "Sync stopped",
+    "status.syncNow": "Sync now",
+    "status.syncFull": "Backfill 30 days",
+    "status.stop": "Stop",
+    "status.legacy": "Legacy history",
+    "status.records": "{n} local records",
+    "status.coverage": "Local coverage: {from} — {to}",
+    "status.official": "Official log retention: {n} days",
+    "status.lastSync": "Last sync: {time}",
+    "status.gap": "History gap detected: last sync was more than {n} days ago, so the missing period cannot be recovered.",
+    "status.partial": "The backfill is incomplete. Use “Backfill 30 days” to retry.",
+    "status.captured": "Captured {n} records from the official logs page",
+    "data.exportCsv": "Export filtered CSV",
+    "data.exportJson": "Export archive JSON",
+    "data.clear": "Clear local history",
+    "data.clearConfirm": "Click again to confirm",
+    "data.storage": "Browser storage: {size}",
+    "data.privacy": "Data stays in this browser’s IndexedDB and is never uploaded to a third party.",
+    "data.diagnostics": "Diagnostics",
+    "data.copyLogs": "Copy logs",
+    "data.noLogs": "No logs yet",
+    "data.workspace": "Current workspace",
+    "data.actions": "Actions",
+    "data.recordCount": "Local records",
+    "data.retentionNote": "The console keeps 30 days; older data comes from the local archive.",
+    "data.pricingTitle": "Cached model pricing",
+    "data.pricingHint": "OpenCode Go list prices",
+    "data.pricingLoading": "Loading the cached pricing…",
+    "data.pricingEmpty": "No cached pricing is available yet.",
+    "data.pricingError": "Pricing refresh failed. Continuing with the existing cache: {error}",
+    "data.pricingMeta": "Cached {time} · {n} model(s)",
+    "data.pricingSource": "View official pricing ↗",
+    "data.pricingModel": "Model",
+    "data.pricingPeriod": "Billing period",
+    "data.pricingContext": "Context tier",
+    "data.pricingInput": "Input / 1M",
+    "data.pricingOutput": "Output / 1M",
+    "data.pricingCacheRead": "Cache read / 1M",
+    "data.pricingCacheWrite": "Cache write / 1M",
+    "data.pricingPeak": "Peak",
+    "data.pricingOffPeak": "Off-peak",
+    "data.pricingAllDay": "All day",
+    "data.pricingAllContext": "All",
+    "data.customInvalid": "The custom range is invalid",
+    "error.title": "Could not load data",
+    "error.session": "Your session expired. Refresh the page and sign in to OpenCode Console again.",
+    "error.permission": "This account cannot access workspace request logs.",
+    "error.cursor": "The pagination cursor expired. Run sync again to restart from page one.",
+    "error.rate": "The API is rate limiting requests. Sync paused; try again later.",
+    "error.badRequest": "The server rejected the current query. Compatible page sizes were attempted.",
+    "error.contract": "The API contract changed. Sync stopped to avoid writing incorrect data.",
+    "error.network": "Network request failed. Check the connection and retry.",
+    "error.unknown": "Unknown error: {message}",
+    "error.workspace": "Open an OpenCode workspace first.",
+    "error.loading": "Loading local data…",
+    "empty.title": "No local records yet",
+    "empty.description": "Use “Sync now” to fetch the last 30 days of request logs from the console.",
+    "legacy.note": "Legacy records have no TTFT/TPS and only contribute to tokens, cache, and cost.",
+    "badge.legacy": "legacy",
+    "badge.success": "succeeded",
+    "badge.failed": "failed",
+    "badge.rejected": "rejected",
+    "badge.cancelled": "cancelled",
+    "log.level.info": "Info",
+    "log.level.warn": "Warning",
+    "log.level.error": "Error",
+    "log.mounted": "Performance lens mounted",
+    "log.migrated": "Migrated {n} legacy usage records",
+    "log.migrationSkipped": "Legacy migration skipped: {error}",
+    "log.principalSkipped": "Principal lookup skipped: {error}",
+    "log.workspace": "Workspace: {name}",
+    "log.workspaceListFailed": "Workspace list failed: {error}",
+    "log.syncBackfillStart": "Starting 30-day backfill",
+    "log.syncIncrementalStart": "Starting incremental sync",
+    "log.syncComplete": "Sync complete: fetched {fetched}, added {added} across {pages} page(s)",
+    "log.syncCached": "Incremental sync hit the local cache: added {added} across {pages} page(s)",
+    "log.syncStopped": "Sync stopped by user",
+    "log.error": "Error: {error}",
+    "log.exportCsv": "Exported {n} filtered records as CSV",
+    "log.exportJson": "Exported {n} archived records as JSON",
+    "log.legacyCleanupSkipped": "Legacy cache cleanup skipped: {error}",
+    "log.historyCleared": "Local history cleared",
+    "log.diagnosticsCopied": "Diagnostics copied",
+    "log.ready": "Performance lens v{version} ready",
+    "log.bootFailed": "Boot failed: {error}",
+    "log.captureFailed": "Capture failed: {error}",
+    "log.pricingUpdated": "Cached Go pricing for {n} models",
+    "log.pricingRefreshFailed": "Go pricing refresh failed: {error}",
+    "sync.toast.updated": "Updated {n} record(s)",
+    "sync.toast.latest": "Already up to date — no new records",
+    "tooltip.inputCost": "Input cost",
+    "tooltip.outputCost": "Output cost",
+    "tooltip.cacheReadCost": "Cache read cost",
+    "tooltip.cacheWriteCost": "Cache write cost",
+    "tooltip.tokensTitle": "{model} · Total tokens",
+    "tooltip.costTitle": "{model} · Cost",
+    "tooltip.estimated": "Estimate",
+    "tooltip.estimatedHint": "Calculated from official Go prices and normalized to the actual total cost.",
+    "tooltip.costUnavailable": "Official Go category pricing is unavailable for this model."
+  };
+  var dictionaries = { zh, en };
+  function detectLanguage(locale) {
+    const value = (locale ?? (typeof navigator !== "undefined" ? navigator.languages?.[0] ?? navigator.language : "")).toLowerCase();
+    return value.startsWith("zh") ? "zh" : "en";
+  }
+  function t(language, key, values) {
+    const template = dictionaries[language][key] ?? dictionaries.en[key] ?? key;
+    if (!values) return template;
+    return template.replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? `{${name}}`));
   }
 
+  // src/logger.ts
+  var LOG_KEY = "ocgo-lens:logs";
+  var MAX_LOGS = 300;
+  function formatLogEntry(entry, language) {
+    return entry.key ? t(language, entry.key, entry.params) : entry.message ?? "";
+  }
+  var Logger = class {
+    entries = [];
+    listeners = /* @__PURE__ */ new Set();
+    constructor() {
+      try {
+        const raw = localStorage.getItem(LOG_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) this.entries = parsed.slice(-MAX_LOGS);
+        }
+      } catch {
+        this.entries = [];
+      }
+    }
+    add(level, key, params) {
+      this.entries.push({ time: Date.now(), level, key, params });
+      if (this.entries.length > MAX_LOGS) this.entries = this.entries.slice(-MAX_LOGS);
+      try {
+        localStorage.setItem(LOG_KEY, JSON.stringify(this.entries));
+      } catch {
+      }
+      for (const listener of this.listeners) listener();
+    }
+    info(key, params) {
+      this.add("info", key, params);
+    }
+    warn(key, params) {
+      this.add("warn", key, params);
+    }
+    error(key, params) {
+      this.add("error", key, params);
+    }
+    all() {
+      return [...this.entries];
+    }
+    clear() {
+      this.entries = [];
+      try {
+        localStorage.removeItem(LOG_KEY);
+      } catch {
+      }
+      for (const listener of this.listeners) listener();
+    }
+    subscribe(listener) {
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+  };
+
+  // src/constants.ts
+  var DB_NAME = "ocgo-lens-v2";
+  var LEGACY_DB_NAME = "ocgo-cache";
+  var DEFAULT_PAGE_SIZE = 50;
+  var FALLBACK_PAGE_SIZES = [50, 25, 10];
+  var RETENTION_DAYS = 30;
+  var OVERLAP_MS = 5 * 60 * 1e3;
+  var INCREMENTAL_LOOKBACK_MS = 60 * 60 * 1e3;
+  var SYNC_INTERVAL_MS = 10 * 60 * 1e3;
+  var PAGE_DELAY_MS = 250;
+  var MAX_SYNC_PAGES = 1e5;
+  var MICROCENTS_PER_DOLLAR = 1e8;
+  var STORAGE_PREFIX = "ocgo-lens:";
+  var TAB_STORAGE_KEY = "activeTab";
+  var FILTERS_STORAGE_KEY = "filters";
+  var RANGE_STORAGE_KEY = "range";
+  var LANGUAGE_STORAGE_KEY = "language";
+  var PANEL_STATE_KEY = "panelState";
+
+  // src/records.ts
+  var OUTCOMES = /* @__PURE__ */ new Set(["succeeded", "failed", "rejected", "cancelled"]);
+  function finiteNumber(value, fallback = 0) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : fallback;
+    if (typeof value === "string" && value.trim() !== "") {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    return fallback;
+  }
+  function optionalNonNegative(value) {
+    if (value === null || value === void 0 || value === "") return void 0;
+    const n = finiteNumber(value, NaN);
+    return Number.isFinite(n) && n >= 0 ? n : void 0;
+  }
+  function toEpoch(value) {
+    if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : void 0;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && String(numeric) === value.trim()) return numeric;
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return void 0;
+  }
+  function text(value, fallback = "") {
+    return typeof value === "string" ? value : fallback;
+  }
+  function normalizeOutcome(value) {
+    return typeof value === "string" && OUTCOMES.has(value) ? value : "failed";
+  }
+  function fallbackID(raw, startedAt) {
+    return [
+      startedAt,
+      text(raw.model ?? raw.requestedModel),
+      finiteNumber(raw.inputTokens),
+      finiteNumber(raw.outputTokens),
+      finiteNumber(raw.cacheReadTokens),
+      finiteNumber(raw.cost)
+    ].join("|");
+  }
+  function normalizeRawRequest(raw, workspaceID) {
+    const startedAt = toEpoch(raw.startedAt);
+    if (startedAt === void 0) return null;
+    const id = text(raw.id) || text(raw.requestID) || fallbackID(raw, startedAt);
+    if (!id) return null;
+    const requestID = text(raw.requestID, id);
+    return {
+      key: `${workspaceID}:${id}`,
+      workspaceID,
+      id,
+      requestID,
+      startedAt,
+      finishedAt: toEpoch(raw.finishedAt),
+      durationMs: Math.max(0, finiteNumber(raw.durationMs)),
+      outcome: normalizeOutcome(raw.outcome),
+      category: text(raw.category, "inference"),
+      protocol: text(raw.protocol),
+      product: text(raw.product),
+      service: text(raw.service),
+      path: text(raw.path),
+      method: text(raw.method),
+      stream: raw.stream === true,
+      sessionID: text(raw.sessionID),
+      userID: text(raw.userID),
+      serviceAccountID: text(raw.serviceAccountID),
+      serviceAPIKeyID: text(raw.serviceAPIKeyID),
+      requestedModel: text(raw.requestedModel),
+      model: text(raw.model) || text(raw.requestedModel) || "unknown",
+      provider: text(raw.provider),
+      statusCode: optionalNonNegative(raw.statusCode),
+      errorCode: text(raw.errorCode),
+      errorMessage: text(raw.errorMessage),
+      timeToFirstTokenMs: optionalNonNegative(raw.timeToFirstTokenMs),
+      firstTokenAt: toEpoch(raw.firstTokenAt),
+      lastTokenAt: toEpoch(raw.lastTokenAt),
+      inputTokens: Math.max(0, finiteNumber(raw.inputTokens)),
+      outputTokens: Math.max(0, finiteNumber(raw.outputTokens)),
+      reasoningTokens: Math.max(0, finiteNumber(raw.reasoningTokens)),
+      cacheReadTokens: Math.max(0, finiteNumber(raw.cacheReadTokens)),
+      cacheWriteTokens: Math.max(0, finiteNumber(raw.cacheWriteTokens)),
+      cacheWrite1hTokens: Math.max(0, finiteNumber(raw.cacheWrite1hTokens)),
+      costUsd: Math.max(0, finiteNumber(raw.cost)),
+      providerCostUsd: Math.max(0, finiteNumber(raw.providerCost)),
+      legacy: false
+    };
+  }
+  function normalizeLegacyUsage(raw, workspaceID) {
+    const startedAt = toEpoch(raw.timeCreated ?? raw.startedAt);
+    if (startedAt === void 0) return null;
+    const idPart = text(raw.id) || fallbackID(raw, startedAt);
+    const id = `legacy:${idPart}`;
+    return {
+      key: `${workspaceID}:${id}`,
+      workspaceID,
+      id,
+      requestID: id,
+      startedAt,
+      durationMs: 0,
+      outcome: "succeeded",
+      category: "inference",
+      protocol: "",
+      product: "",
+      service: "",
+      path: "",
+      method: "",
+      stream: false,
+      sessionID: "",
+      userID: "",
+      serviceAccountID: "",
+      serviceAPIKeyID: "",
+      requestedModel: text(raw.model),
+      model: text(raw.model) || "unknown",
+      provider: text(raw.provider),
+      errorCode: "",
+      errorMessage: "",
+      inputTokens: Math.max(0, finiteNumber(raw.inputTokens)),
+      outputTokens: Math.max(0, finiteNumber(raw.outputTokens)),
+      reasoningTokens: Math.max(0, finiteNumber(raw.reasoningTokens)),
+      cacheReadTokens: Math.max(0, finiteNumber(raw.cacheReadTokens)),
+      cacheWriteTokens: Math.max(0, finiteNumber(raw.cacheWrite5mTokens ?? raw.cacheWriteTokens)),
+      cacheWrite1hTokens: Math.max(0, finiteNumber(raw.cacheWrite1hTokens)),
+      costUsd: Math.max(0, finiteNumber(raw.cost)) / MICROCENTS_PER_DOLLAR,
+      providerCostUsd: 0,
+      legacy: true
+    };
+  }
+  function getWorkspaceID(pathname = location.pathname) {
+    const match = pathname.match(/^\/console\/(wrk_[^/?#]+)/);
+    return match?.[1] ?? null;
+  }
+
+  // src/storage.ts
+  var STORE_REQUESTS = "requests";
+  var STORE_SYNC = "syncState";
+  var STORE_META = "meta";
+  var dbPromise = null;
+  var syncStateMutationChain = Promise.resolve();
+  function requestPromise(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed"));
+    });
+  }
+  function transactionDone(transaction) {
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed"));
+      transaction.onabort = () => reject(transaction.error ?? new DOMException("Transaction aborted", "AbortError"));
+    });
+  }
+  function openDatabase() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE_REQUESTS)) {
+          const store = db.createObjectStore(STORE_REQUESTS, { keyPath: "key" });
+          store.createIndex("workspaceStartedAt", ["workspaceID", "startedAt"]);
+          store.createIndex("workspaceModel", ["workspaceID", "model"]);
+          store.createIndex("workspaceProvider", ["workspaceID", "provider"]);
+        }
+        if (!db.objectStoreNames.contains(STORE_SYNC)) {
+          db.createObjectStore(STORE_SYNC, { keyPath: "workspaceID" });
+        }
+        if (!db.objectStoreNames.contains(STORE_META)) {
+          db.createObjectStore(STORE_META, { keyPath: "key" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Failed to open IndexedDB"));
+    });
+    return dbPromise;
+  }
+  async function putRecords(records) {
+    if (records.length === 0) return;
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_REQUESTS, "readwrite");
+    const store = transaction.objectStore(STORE_REQUESTS);
+    for (const record of records) store.put(record);
+    await transactionDone(transaction);
+  }
+  async function getRecords(workspaceID, from = 0, to = Number.MAX_SAFE_INTEGER) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_REQUESTS, "readonly");
+    const index = transaction.objectStore(STORE_REQUESTS).index("workspaceStartedAt");
+    const range = IDBKeyRange.bound([workspaceID, from], [workspaceID, to]);
+    const records = await requestPromise(index.getAll(range));
+    await transactionDone(transaction);
+    return records;
+  }
+  async function getAllRecords(workspaceID) {
+    return getRecords(workspaceID);
+  }
+  async function getRecordKeys(workspaceID, from = 0, to = Number.MAX_SAFE_INTEGER) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_REQUESTS, "readonly");
+    const index = transaction.objectStore(STORE_REQUESTS).index("workspaceStartedAt");
+    const range = IDBKeyRange.bound([workspaceID, from], [workspaceID, to]);
+    const keys = await requestPromise(index.getAllKeys(range));
+    await transactionDone(transaction);
+    return keys;
+  }
+  async function countRecords(workspaceID) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_REQUESTS, "readonly");
+    const index = transaction.objectStore(STORE_REQUESTS).index("workspaceStartedAt");
+    const range = IDBKeyRange.bound([workspaceID, 0], [workspaceID, Number.MAX_SAFE_INTEGER]);
+    const count = await requestPromise(index.count(range));
+    await transactionDone(transaction);
+    return count;
+  }
+  async function getLatestStartedAt(workspaceID) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_REQUESTS, "readonly");
+    const index = transaction.objectStore(STORE_REQUESTS).index("workspaceStartedAt");
+    const range = IDBKeyRange.bound([workspaceID, 0], [workspaceID, Number.MAX_SAFE_INTEGER]);
+    const cursor = await requestPromise(index.openCursor(range, "prev"));
+    await transactionDone(transaction);
+    const record = cursor?.value;
+    return record?.startedAt;
+  }
+  async function getSyncState(workspaceID) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_SYNC, "readonly");
+    const result = await requestPromise(transaction.objectStore(STORE_SYNC).get(workspaceID));
+    await transactionDone(transaction);
+    return result;
+  }
+  function updateSyncState(workspaceID, updater) {
+    const run = async () => {
+      const db = await openDatabase();
+      const transaction = db.transaction(STORE_SYNC, "readwrite");
+      const store = transaction.objectStore(STORE_SYNC);
+      const current = await requestPromise(store.get(workspaceID));
+      const next = updater(current);
+      store.put(next);
+      await transactionDone(transaction);
+      return next;
+    };
+    const task = syncStateMutationChain.then(run, run);
+    syncStateMutationChain = task.then(() => void 0, () => void 0);
+    return task;
+  }
+  async function getMeta(key) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_META, "readonly");
+    const result = await requestPromise(transaction.objectStore(STORE_META).get(key));
+    await transactionDone(transaction);
+    return result?.value;
+  }
+  async function putMeta(key, value) {
+    const db = await openDatabase();
+    const transaction = db.transaction(STORE_META, "readwrite");
+    transaction.objectStore(STORE_META).put({ key, value });
+    await transactionDone(transaction);
+  }
+  async function clearWorkspace(workspaceID) {
+    const db = await openDatabase();
+    const transaction = db.transaction([STORE_REQUESTS, STORE_SYNC], "readwrite");
+    const index = transaction.objectStore(STORE_REQUESTS).index("workspaceStartedAt");
+    const range = IDBKeyRange.bound([workspaceID, 0], [workspaceID, Number.MAX_SAFE_INTEGER]);
+    const cursorRequest = index.openCursor(range);
+    await new Promise((resolve, reject) => {
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      cursorRequest.onerror = () => reject(cursorRequest.error);
+    });
+    transaction.objectStore(STORE_SYNC).delete(workspaceID);
+    await transactionDone(transaction);
+  }
+  async function storageEstimate() {
+    if (!navigator.storage?.estimate) return {};
+    const estimate = await navigator.storage.estimate();
+    return { usage: estimate.usage, quota: estimate.quota };
+  }
+  async function legacyDatabaseExists() {
+    if (typeof indexedDB.databases === "function") {
+      const databases = await indexedDB.databases();
+      return databases.some((db) => db.name === LEGACY_DB_NAME);
+    }
+    return true;
+  }
+  async function readLegacyUsage(workspaceID) {
+    if (!await legacyDatabaseExists()) return [];
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(LEGACY_DB_NAME);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error("Legacy database is blocked"));
+    });
+    try {
+      if (!db.objectStoreNames.contains("kv")) return [];
+      const transaction = db.transaction("kv", "readonly");
+      const value = await requestPromise(transaction.objectStore("kv").get(`usage:${workspaceID}`));
+      await transactionDone(transaction);
+      return Array.isArray(value) ? value.filter((item) => Boolean(item) && typeof item === "object") : [];
+    } finally {
+      db.close();
+    }
+  }
+  async function clearLegacyUsage(workspaceID) {
+    if (!await legacyDatabaseExists()) return;
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(LEGACY_DB_NAME);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      if (!db.objectStoreNames.contains("kv")) return;
+      const transaction = db.transaction("kv", "readwrite");
+      transaction.objectStore("kv").delete(`usage:${workspaceID}`);
+      await transactionDone(transaction);
+    } finally {
+      db.close();
+    }
+  }
+
+  // src/migration.ts
+  async function migrateLegacyUsage(workspaceID, now = Date.now()) {
+    const state = await getSyncState(workspaceID);
+    if (state?.legacyImportedAt) return 0;
+    const raw = await readLegacyUsage(workspaceID);
+    const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+    const records = raw.map((item) => normalizeLegacyUsage(item, workspaceID)).filter((item) => item !== null && item.startedAt < cutoff);
+    await putRecords(records);
+    await updateSyncState(workspaceID, (current) => {
+      const previous = current ?? state;
+      return {
+        workspaceID,
+        retentionDays: previous?.retentionDays ?? RETENTION_DAYS,
+        coverageStart: records.length ? Math.min(previous?.coverageStart ?? now, ...records.map((record) => record.startedAt)) : previous?.coverageStart,
+        coverageEnd: previous?.coverageEnd,
+        latestStartedAt: records.length ? Math.max(previous?.latestStartedAt ?? 0, ...records.map((record) => record.startedAt)) : previous?.latestStartedAt,
+        lastSyncAttemptAt: previous?.lastSyncAttemptAt,
+        lastSuccessfulSyncAt: previous?.lastSuccessfulSyncAt,
+        backfillComplete: previous?.backfillComplete ?? false,
+        gapDetected: previous?.gapDetected ?? false,
+        legacyImportedAt: now,
+        lastError: previous?.lastError
+      };
+    });
+    return records.length;
+  }
+  function incrementalSince(state, now = Date.now(), latestOverride) {
+    const retentionStart = now - RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+    const latest = latestOverride ?? state?.latestStartedAt;
+    if (latest === void 0) return retentionStart;
+    const syncStart = (state?.lastSuccessfulSyncAt ?? now) - INCREMENTAL_LOOKBACK_MS;
+    return Math.max(retentionStart, Math.min(latest - OVERLAP_MS, syncStart));
+  }
+
+  // src/sync.ts
   function abortError() {
     return new DOMException("The operation was aborted.", "AbortError");
   }
-
-  // 可被 AbortSignal 中断的等待；中断时抛 AbortError（复用“停止任务”语义）
   function sleep(ms, signal) {
     return new Promise((resolve, reject) => {
-      if (signal && signal.aborted) {
-        reject(signal.reason || abortError());
+      if (signal?.aborted) {
+        reject(signal?.reason ?? abortError());
         return;
       }
       const timer = setTimeout(() => {
-        if (signal) signal.removeEventListener("abort", onAbort);
+        signal?.removeEventListener("abort", onAbort);
         resolve();
       }, ms);
       const onAbort = () => {
         clearTimeout(timer);
-        reject(signal.reason || abortError());
+        signal?.removeEventListener("abort", onAbort);
+        reject(signal?.reason ?? abortError());
       };
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
-
-  // 带退避重试的 RPC：可重试错误最多重试 maxRetries 次（默认取配置），退避 baseDelayMs*2^n + ≤30% 抖动
-  async function rpcCallWithRetry(name, args, signal, opts) {
-    opts = opts || {};
-    const maxRetries = opts.maxRetries || config.maxPageRetries || 4;
-    const baseDelayMs = opts.baseDelayMs || 1000;
-    let lastErr;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (signal && signal.aborted) throw (signal.reason || abortError());
+  function isRetryable(error) {
+    return error instanceof ApiError && ["rate-limit", "server", "network"].includes(error.kind);
+  }
+  async function retrying(operation, signal, maxRetries = 4) {
+    let lastError;
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      if (signal?.aborted) throw signal.reason ?? abortError();
       try {
-        return await rpcCall(name, args, signal);
-      } catch (e) {
-        if (e && e.name === "AbortError") throw e;
-        lastErr = e;
-        if (!isRetryableError(e)) throw e;
-        if (attempt >= maxRetries) {
-          if (opts.onExhausted) opts.onExhausted(attempt, e);
-          throw e;
-        }
-        if (opts.onRetry) opts.onRetry(attempt + 1, e);
-        const exp = Math.pow(2, attempt);
-        const delay = Math.round(baseDelayMs * exp * (1 + Math.random() * 0.3));
+        return await operation();
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
+        lastError = error;
+        if (!isRetryable(error) || attempt >= maxRetries) throw error;
+        const retryAfter = error instanceof ApiError ? error.retryAfterMs : void 0;
+        const delay = retryAfter ?? Math.round(1e3 * 2 ** attempt * (1 + Math.random() * 0.3));
         await sleep(delay, signal);
       }
     }
-    throw lastErr;
+    throw lastError;
   }
-  // =====================================================================
-  // 7. 任务控制器：同一时间只允许一个任务，支持停止
-  // =====================================================================
-  const task = {
-    running: false,
-    stopRequested: false,
-    controller: null,
-    label: "",
-  };
-
-  function setTaskBusy(label) {
-    if (task.running) {
-      setStatus(t("status.taskBusy", { label: task.label }));
-      return false;
-    }
-    task.running = true;
-    task.stopRequested = false;
-    task.controller = new AbortController();
-    task.label = label;
-    showStopButton();
-    return true;
+  function isAbort(error) {
+    return error instanceof Error && error.name === "AbortError";
   }
-
-  function requestStop() {
-    if (!task.running) return;
-    task.stopRequested = true;
-    if (task.controller) task.controller.abort();
-    setStatus(t("status.stopRequested"));
-    info("task", t("log.taskStopRequested", { label: task.label }));
-  }
-
-  function finishTask() {
-    task.running = false;
-    task.stopRequested = false;
-    task.controller = null;
-    task.label = "";
-    hideStopButton();
-  }
-
-  function showStopButton() {
-    if (!ui) return;
-    ui.btnStop.style.display = "inline-block"; // 覆盖 CSS 的 display:none
-    ui.btnStop.textContent = t("usage.stop") + "(" + task.label + ")";
-  }
-  function hideStopButton() {
-    if (ui && ui.btnStop) ui.btnStop.style.display = "none";
-  }
-
-  // =====================================================================
-  // 8. 全量用量拉取（可取消 / 防重复页 / 完成时标记 complete）
-  // =====================================================================
-  async function fetchAllUsage(ws, onProgress) {
-    const PAGE_SIZE = 50;
-    const maxPages = config.maxUsagePages || 500;
-    // 退级重试节奏：页间默认小间隔预防连接池耗尽；失败后进入退级模式放慢
-    const NORMAL_PAGE_DELAY_MS = 250;
-    const DEGRADED_PAGE_DELAY_MS = 1500;
-    const DEGRADED_RECOVER_PAGES = 5;
-    const maxPageRetries = config.maxPageRetries || 4;
-    // 历史数据：用于“遇到重合即停止”的滚动刷新优化
-    const prev = await loadUsage(ws);
-    const prevComplete = !!(prev.meta && prev.meta.complete && prev.meta.count > 0);
-    const prevFps = new Set(prev.records.map((r) => usageFingerprint(r)));
-    let page = 0;
-    const merged = [];
-    const seen = new Set();
-    let prevRowsKey = null;
-    let stopped = false;
-    let stoppedAtHistory = false;
-    let reachedEnd = false;
-    let degraded = false;
-    let cleanStreak = 0;
-    const signal = task.controller ? task.controller.signal : undefined;
-    const enterDegraded = () => {
-      if (degraded) return;
-      degraded = true;
-      cleanStreak = 0;
-      warn("usage", t("log.degradedOn", { delay: DEGRADED_PAGE_DELAY_MS }), { delay: DEGRADED_PAGE_DELAY_MS });
-    };
-    const addRow = (r) => {
-      if (!r) return false;
-      const fp = usageFingerprint(r);
-      if (!fp || seen.has(fp)) return false;
-      seen.add(fp);
-      merged.push(r);
-      return true;
-    };
-    for (; page < maxPages; page++) {
-      if (task.stopRequested) { stopped = true; break; }
-      // 页间冷却：正常 250ms，退级模式 1500ms（第 0 页前不等待）
-      if (page > 0) await sleep(degraded ? DEGRADED_PAGE_DELAY_MS : NORMAL_PAGE_DELAY_MS, signal);
-      let rows;
-      try {
-        rows = await rpcCallWithRetry("usage.list", [ws, page], signal, {
-          maxRetries: maxPageRetries,
-          onRetry: (retryIndex, err) => {
-            warn("usage", t("log.retryPage", { page: page, attempt: retryIndex, max: maxPageRetries, err: String(err && err.message || err).slice(0, 200) }), { page: page, attempt: retryIndex, max: maxPageRetries });
-            enterDegraded();
-          },
-          onExhausted: (totalAttempts, err) => {
-            warn("usage", t("log.retryExhausted", { page: page, max: maxPageRetries }), { page: page, totalAttempts: totalAttempts, err: String(err && err.message || err).slice(0, 300) });
-          },
-        });
-      } catch (e) {
-        if (e && e.name === "AbortError") { stopped = true; break; }
-        throw e;
+  async function runPages(workspaceID, since, pageSize, knownKeys, stopWhenCached, signal, onProgress) {
+    let cursor;
+    let until;
+    let pages = 0;
+    let fetched = 0;
+    let added = 0;
+    let retentionDays = RETENTION_DAYS;
+    let lastStartedAt;
+    const collected = [];
+    const usedCursors = /* @__PURE__ */ new Set();
+    for (; pages < MAX_SYNC_PAGES; pages += 1) {
+      if (signal?.aborted) throw signal.reason ?? abortError();
+      if (pages > 0) await sleep(PAGE_DELAY_MS, signal);
+      const page = await retrying(
+        () => listRequestLogs(workspaceID, { since, until, cursor, limit: pageSize }, signal),
+        signal
+      );
+      retentionDays = page.retentionDays || retentionDays;
+      if (page.until !== void 0) until = page.until;
+      const records = page.items.map((item) => normalizeRawRequest(item, workspaceID)).filter((item) => item !== null);
+      if (records.length !== page.items.length) {
+        throw new ApiError("contract", "Request log page contained records without a valid id or startedAt field.");
       }
-      if (!Array.isArray(rows)) break;
-      // 防呆：若服务端忽略 page 一直返回同一页，则判定分页失效并停止
-      const rowsKey = JSON.stringify(rows.map((r) => r && r.id));
-      if (rowsKey === prevRowsKey && rows.length > 0) {
-        warn("usage", t("log.duplicatePage", { page: page }), { page: page });
-        break;
+      if (records.some((record) => record.category !== "inference")) {
+        throw new ApiError("contract", "Request log page returned non-inference records despite the inference filter.");
       }
-      prevRowsKey = rowsKey;
-      let added = 0;
-      let hitHistory = 0;
-      for (const r of rows) {
-        if (addRow(r)) added++;
-        // 本页出现与历史重合的记录 => 更早的页大概率都已在历史中，直接拿历史数据相加
-        if (prevFps.has(usageFingerprint(r))) hitHistory++;
-      }
-      // 退级恢复：连续成功页足够后退出退级模式
-      if (degraded) {
-        cleanStreak++;
-        if (cleanStreak >= DEGRADED_RECOVER_PAGES) {
-          degraded = false;
-          cleanStreak = 0;
-          info("usage", t("log.degradedOff", { n: DEGRADED_RECOVER_PAGES }), { n: DEGRADED_RECOVER_PAGES });
+      const pageWasCached = records.length > 0 && records.every((record) => knownKeys.has(record.key));
+      const newKeys = new Set(records.filter((record) => !knownKeys.has(record.key)).map((record) => record.key));
+      if (records.length) {
+        await putRecords(records);
+        collected.push(...records);
+        fetched += records.length;
+        added += newKeys.size;
+        for (const key of newKeys) knownKeys.add(key);
+        for (const record of records) {
+          lastStartedAt = Math.max(lastStartedAt ?? 0, record.startedAt);
         }
       }
-      if (onProgress) onProgress({ page: page + 1, fetched: merged.length, added, hitHistory, degraded });
-      if (rows.length < PAGE_SIZE) { reachedEnd = true; page++; break; }
-      // 仅当历史已完整时才“命中历史即停止”；历史不完整时继续翻到底，才能标记完整
-      if (hitHistory > 0 && prevComplete) {
-        stoppedAtHistory = true;
-        break;
-      }
-    }
-    // 手动停止/防呆异常不算完整；历史重合停止时，仅当历史本身完整才标记完整
-    const full = !stopped && (reachedEnd || (stoppedAtHistory && prevComplete));
-    await cacheUsage(ws, merged, { full });
-    if (stopped) {
-      info("usage", t("log.fetchStopped", { ws: ws }), { pages: page, total: merged.length });
-      return { records: merged, stopped: true, pages: page, stoppedAtHistory: false };
-    }
-    if (stoppedAtHistory) {
-      info("usage", t("log.fetchHitHistory", { ws: ws }), { pages: page, newRows: merged.length, cached: prev.meta.count, complete: full });
-      return { records: merged, stopped: false, pages: page, stoppedAtHistory: true, complete: full };
-    }
-    info("usage", t("log.fetchDone", { ws: ws }), { pages: page, total: merged.length });
-    return { records: merged, stopped: false, pages: page, stoppedAtHistory: false, complete: full };
-  }
-
-  async function fetchAllUsageWithProgress(ws) {
-    if (!ws) { setStatus(t("status.noWorkspace")); return { records: [] }; }
-    if (!setTaskBusy(t("task.fetchAll"))) return { records: [] };
-    setStatus(t("status.fetching", { n: config.maxUsagePages }));
-    try {
-      const result = await fetchAllUsage(ws, (p) => {
-        let msg = t("status.fetchPage", { page: p.page, n: p.fetched }) + (p.added ? t("status.fetchAdded", { n: p.added }) : "");
-        if (p.hitHistory) msg += t("status.hitHistory", { n: p.hitHistory });
-        if (p.degraded) msg += t("status.degraded");
-        setStatus(msg);
+      const nextCursor = page.nextCursor;
+      onProgress?.({
+        phase: "paging",
+        page: pages + 1,
+        fetched,
+        saved: newKeys.size,
+        message: nextCursor ? void 0 : "complete"
       });
-      if (result.stopped) {
-        setStatus(t("status.fetchStopped", { n: result.records.length }));
-      } else if (result.stoppedAtHistory) {
-        const completeNote = result.complete ? t("status.completeNote") : t("status.incompleteNote");
-        setStatus(t("status.fetchHitHistory", { n: result.records.length, note: completeNote }));
-      } else {
-        setStatus(t("status.fetchDone", { n: result.records.length }));
+      if (stopWhenCached && pageWasCached) {
+        return {
+          complete: true,
+          cacheHit: true,
+          pages: pages + 1,
+          fetched,
+          added,
+          records: collected,
+          lastStartedAt,
+          retentionDays
+        };
       }
-      return result.records;
-    } catch (e) {
-      error("usage", t("log.fetchFail"), String(e && e.message || e));
-      setStatus(t("status.fetchFail", { err: String(e && e.message || e) }));
-      throw e;
-    } finally {
-      finishTask();
-      await renderCacheState();
+      if (!nextCursor) {
+        return {
+          complete: true,
+          cacheHit: false,
+          pages: pages + 1,
+          fetched,
+          added,
+          records: collected,
+          lastStartedAt,
+          retentionDays
+        };
+      }
+      if (usedCursors.has(nextCursor)) {
+        throw new ApiError("contract", "The request-log pagination cursor repeated; sync stopped to prevent an infinite loop.");
+      }
+      usedCursors.add(nextCursor);
+      cursor = nextCursor;
     }
-  }  // =====================================================================
-  // 9. 页面捕获：写入历史但绝不提升 complete / lastFullFetchAt
-  // =====================================================================
-  const pageWs = () => {
-    const m = location.pathname.match(/\/workspace\/([^/?#]+)/);
-    return m ? m[1] : (ui ? ui.ws.value : "") || undefined;
-  };
-
-  function installFetchHook() {
-    if (!window.fetch || window.__ocgoFetchHooked) return;
-    const origFetch = window.fetch;
-    window.__ocgoFetchHooked = true;
-    window.fetch = function (input, init) {
-      const url = typeof input === "string" ? input : input && input.url ? input.url : "";
-      const isServer = url.includes("/_server");
-      const p = origFetch.apply(this, arguments);
-      if (!isServer) return p;
-      p.then((res) => {
-        const hdrs = init && init.headers ? init.headers : {};
-        const get = (n) => (typeof hdrs.get === "function" ? hdrs.get(n) : hdrs[n]);
-        const fnId = get("X-Server-Id") || "";
-        const name = fnId && FN_NAME_BY_ID[fnId] ? FN_NAME_BY_ID[fnId] : fnId;
-        res.clone().text().then((text) => {
-          let data = null;
-          try { data = decodeJsonOrStream(text); } catch (e) {
-            warn("capture", t("log.captureDecodeFail"), { name, message: String(e && e.message || e), body: text.slice(0, 300) });
-            return;
-          }
-          const n = Array.isArray(data) ? data.length : (data && typeof data === "object" ? Object.keys(data).length : 0);
-          info("capture", t("log.captureRpc", { name: name || url }) + (Array.isArray(data) ? t("log.rowsSuffix", { n: n }) : ""));
-          const ws = pageWs();
-          if (name === "usage.list" && Array.isArray(data)) {
-            const byWs = new Map();
-            for (const r of data) {
-              if (r && r.workspaceID) {
-                if (!byWs.has(r.workspaceID)) byWs.set(r.workspaceID, []);
-                byWs.get(r.workspaceID).push(r);
-              }
-            }
-            for (const [wid, rows] of byWs) cacheUsage(wid, rows, { full: false }).catch(() => {});
-            if (ws) cacheUsage(ws, data, { full: false }).catch(() => {});
-          }
-        }).catch(() => {});
-      }).catch(() => {});
-      return p;
+    throw new ApiError("server", `Sync stopped after ${MAX_SYNC_PAGES} pages. Narrow the range or retry.`);
+  }
+  function failedState(current, workspaceID, now, message) {
+    return {
+      workspaceID,
+      retentionDays: current?.retentionDays ?? RETENTION_DAYS,
+      coverageStart: current?.coverageStart,
+      coverageEnd: current?.coverageEnd,
+      latestStartedAt: current?.latestStartedAt,
+      lastSyncAttemptAt: now,
+      lastSuccessfulSyncAt: current?.lastSuccessfulSyncAt,
+      backfillComplete: current?.backfillComplete ?? false,
+      gapDetected: current?.gapDetected ?? false,
+      legacyImportedAt: current?.legacyImportedAt,
+      lastError: message
     };
-    info("capture", t("log.captureHook"));
   }
-
-  // =====================================================================
-  // 10. 用量分析
-  // =====================================================================
-  const MICROCENTS_PER_DOLLAR = 1e8;
-  const fmtUsd = (v) => "$" + (num(v) / MICROCENTS_PER_DOLLAR).toFixed(4);
-  const fmtNum = (v) => num(v).toLocaleString("en-US");
-  const num = (v) => (v === null || v === undefined ? 0 : Number(v));
-
-  function analyzeUsage(records, fromMs, toMs) {
-    const inRange = records.filter((r) => {
-      const t = new Date(r.timeCreated).getTime();
-      return t >= fromMs && t <= toMs;
-    });
-    const total = { requests: inRange.length, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, cost: 0 };
-    const byModel = {};
-    const byDay = {};
-    for (const r of inRange) {
-      total.input += num(r.inputTokens);
-      total.output += num(r.outputTokens);
-      total.reasoning += num(r.reasoningTokens);
-      total.cacheRead += num(r.cacheReadTokens);
-      total.cacheWrite5m += num(r.cacheWrite5mTokens);
-      total.cacheWrite1h += num(r.cacheWrite1hTokens);
-      total.cost += num(r.cost);
-      const model = r.model || "unknown";
-      if (!byModel[model]) byModel[model] = { requests: 0, input: 0, output: 0, cacheRead: 0, cost: 0, provider: r.provider || "" };
-      const m = byModel[model];
-      m.requests++; m.input += num(r.inputTokens); m.output += num(r.outputTokens);
-      m.cacheRead += num(r.cacheReadTokens); m.cost += num(r.cost);
-      const day = new Date(r.timeCreated).toISOString().slice(0, 10);
-      if (!byDay[day]) byDay[day] = { requests: 0, input: 0, output: 0, cacheRead: 0, cost: 0 };
-      const d = byDay[day];
-      d.requests++; d.input += num(r.inputTokens); d.output += num(r.outputTokens);
-      d.cacheRead += num(r.cacheReadTokens); d.cost += num(r.cost);
-    }
-    const cacheHitRate = total.cacheRead + total.input > 0 ? total.cacheRead / (total.cacheRead + total.input) : 0;
-    for (const k in byModel) {
-      const m = byModel[k];
-      m.cacheHitRate = m.cacheRead + m.input > 0 ? m.cacheRead / (m.cacheRead + m.input) : 0;
-    }
-    return { total, cacheHitRate, byModel, byDay };
+  function mergeState(previous, workspaceID, since, now, result, full) {
+    const previousSuccess = previous?.lastSuccessfulSyncAt;
+    const missedWindow = previousSuccess !== void 0 && now - previousSuccess > RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+    return {
+      workspaceID,
+      retentionDays: result.retentionDays || RETENTION_DAYS,
+      coverageStart: previous?.coverageStart === void 0 ? since : Math.min(previous.coverageStart, since),
+      coverageEnd: now,
+      latestStartedAt: Math.max(previous?.latestStartedAt ?? 0, result.lastStartedAt ?? 0) || void 0,
+      lastSyncAttemptAt: now,
+      lastSuccessfulSyncAt: now,
+      backfillComplete: Boolean(previous?.backfillComplete || full),
+      gapDetected: Boolean(previous?.gapDetected || missedWindow),
+      legacyImportedAt: previous?.legacyImportedAt,
+      lastError: void 0
+    };
   }
-
-  function renderAnalysis(analysis, label) {
-    const tot = analysis.total;
-    const cards = [
-      [t("metric.requests"), fmtNum(tot.requests)],
-      [t("metric.input"), fmtNum(tot.input)],
-      [t("metric.output"), fmtNum(tot.output)],
-      [t("metric.reasoning"), fmtNum(tot.reasoning)],
-      [t("metric.cacheRead"), fmtNum(tot.cacheRead)],
-      [t("metric.cacheWrite"), fmtNum(tot.cacheWrite5m + tot.cacheWrite1h)],
-      [t("metric.cost"), fmtUsd(tot.cost)],
-      [t("metric.cacheHitRate"), (analysis.cacheHitRate * 100).toFixed(2) + "%"],
-    ];
-    let html = "<div class='ocgo-metrics'>" + cards.map(([k, v]) =>
-      "<div class='ocgo-metric'><span>" + k + "</span><b>" + v + "</b></div>").join("") + "</div>";
-    html += "<p style='color:#8b949e'>" + t("analysis.formula", { label: label, n: fmtNum(tot.requests) }) + "</p>";
-    const models = Object.entries(analysis.byModel).sort((a, b) => b[1].cost - a[1].cost);
-    if (models.length) {
-      html += "<h4>" + t("analysis.byModel") + "</h4><table class='ocgo-tbl'><tr><th>" + t("analysis.col.model") + "</th><th>" + t("analysis.col.requests") + "</th><th>" + t("analysis.col.input") + "</th><th>" + t("analysis.col.output") + "</th><th>" + t("analysis.col.cacheRead") + "</th><th>" + t("analysis.col.cacheHitRate") + "</th><th>" + t("analysis.col.cost") + "</th></tr>";
-      for (const [m, v] of models) {
-        html += "<tr><td>" + m + "</td><td>" + fmtNum(v.requests) + "</td><td>" + fmtNum(v.input) + "</td><td>" + fmtNum(v.output) +
-          "</td><td>" + fmtNum(v.cacheRead) + "</td><td>" + (v.cacheHitRate * 100).toFixed(2) + "%" + "</td><td>" + fmtUsd(v.cost) + "</td></tr>";
-      }
-      html += "</table>";
-    }
-    const days = Object.entries(analysis.byDay).sort((a, b) => (a[0] < b[0] ? 1 : -1));
-    if (days.length) {
-      html += "<h4>" + t("analysis.byDay") + "</h4><table class='ocgo-tbl'><tr><th>" + t("analysis.col.day") + "</th><th>" + t("analysis.col.requests") + "</th><th>" + t("analysis.col.input") + "</th><th>" + t("analysis.col.output") + "</th><th>" + t("analysis.col.cacheRead") + "</th><th>" + t("analysis.col.cost") + "</th></tr>";
-      for (const [d, v] of days) {
-        html += "<tr><td>" + d + "</td><td>" + fmtNum(v.requests) + "</td><td>" + fmtNum(v.input) + "</td><td>" + fmtNum(v.output) +
-          "</td><td>" + fmtNum(v.cacheRead) + "</td><td>" + fmtUsd(v.cost) + "</td></tr>";
-      }
-      html += "</table>";
-    }
-    if (tot.requests === 0) html = "<p>" + t("analysis.noRecords") + "</p>" + html;
-    return html;
-  }  // =====================================================================
-  // 11. 面板 UI
-  // =====================================================================
-  let ui = null;
-  let workspaceList = [];
-  let workspacesLoaded = false;
-
-  function el(tag, attrs, text) {
-    const node = document.createElement(tag);
-    if (attrs) for (const k in attrs) node.setAttribute(k, attrs[k]);
-    if (text !== undefined) node.textContent = text;
-    return node;
-  }
-
-  function setStatus(text) { if (ui) ui.status.textContent = text; }
-  function setAnalysis(html) { if (ui) ui.analysis.innerHTML = html; }
-
-  function currentWorkspace() {
-    const v = ui && ui.ws.value;
-    if (v) return v;
-    const m = location.pathname.match(/\/workspace\/([^/?#]+)/);
-    return m ? m[1] : undefined;
-  }
-
-  function css() {
-    return `
-#ocgo-fab{position:fixed;right:18px;bottom:18px;z-index:2147483646;width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-  background:#0b0d11;color:#dfe4e9;border:2px solid #fff;cursor:pointer;font-size:18px;
-  box-shadow:0 0 0 3px rgba(255,255,255,.18),0 2px 14px rgba(0,0,0,.5);transition:border-color .15s,color .15s,transform .1s,box-shadow .15s;}
-#ocgo-fab:hover{border-color:#fff;box-shadow:0 0 0 4px rgba(255,255,255,.35),0 2px 14px rgba(0,0,0,.5);color:#fff;transform:scale(1.05);}
-#ocgo-fab svg{width:50px !important;height:50px !important;max-width:none !important;max-height:none !important;display:block;flex:0 0 auto;}
-#ocgo-fab .ocgo-logo-diamond{transform-box:fill-box;transform-origin:center;animation:ocgoSpin 8s linear infinite;}
-#ocgo-fab .ocgo-logo-check{animation:ocgoPulse 2.5s ease-in-out infinite;}
-@keyframes ocgoSpin{to{transform:rotate(360deg);}}
-@keyframes ocgoPulse{0%,100%{stroke-opacity:.18;}50%{stroke-opacity:.55;}}
-@media (prefers-reduced-motion:reduce){#ocgo-fab .ocgo-logo-diamond,#ocgo-fab .ocgo-logo-check{animation:none;}}
-#ocgo-panel{position:fixed;right:18px;bottom:74px;z-index:2147483647;width:480px;max-width:calc(100vw - 36px);
-  color-scheme:dark;max-height:calc(100vh - 100px);display:flex;flex-direction:column;color:#e4e8ed;
-  background:
-    linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px),
-    linear-gradient(160deg,#0b0d11 0%,#11141a 100%);
-  background-size:28px 28px,28px 28px,100% 100%;
-  border:1px solid rgba(255,255,255,.12);border-radius:14px;box-shadow:0 10px 34px rgba(0,0,0,.6);
-  font:12px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
-#ocgo-panel.ocgo-hidden{display:none;}
-#ocgo-head{padding:9px 10px 8px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-  background:rgba(255,255,255,.03);border-radius:14px 14px 0 0;}
-#ocgo-head .ocgo-dots{display:inline-flex;gap:5px;margin-right:2px;flex:0 0 auto;}
-#ocgo-head .ocgo-dots .ocgo-dot{width:8px;height:8px;border-radius:50%;background:#fff;}
-#ocgo-head .ocgo-dots .ocgo-dot:nth-child(1){opacity:.55;}
-#ocgo-head .ocgo-dots .ocgo-dot:nth-child(2){opacity:.25;}
-#ocgo-head .ocgo-dots .ocgo-dot:nth-child(3){opacity:.12;}
-#ocgo-head .ocgo-title{font-weight:700;font-size:13px;letter-spacing:.2px;margin-right:auto;}
-#ocgo-head #ocgo-lang{background:#0d1014;color:#dfe4e9;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:3px 5px;font-size:11px;cursor:pointer;flex:0 0 auto;}
-#ocgo-head #ocgo-lang option{background:#0d1014;color:#dfe4e9;}
-#ocgo-close{background:#0d1014;color:#8d97a4;border:1px solid rgba(255,255,255,.16);border-radius:6px;width:26px;height:26px;font-size:13px;line-height:1;cursor:pointer;flex:0 0 auto;}
-#ocgo-close:hover{background:rgba(255,255,255,.08);color:#fff;}
-#ocgo-tabs{display:flex;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.18);}
-#ocgo-tabs button{flex:1;background:none;border:none;color:#7f8995;padding:8px 0;cursor:pointer;font-size:12px;border-bottom:2px solid transparent;letter-spacing:.2px;}
-#ocgo-tabs button:hover{color:#cfd5dc;}
-#ocgo-tabs button.ocgo-active{color:#fff;border-bottom-color:#fff;}
-#ocgo-body{padding:8px 10px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:8px;}
-.ocgo-tab{display:none;flex-direction:column;gap:8px;flex:1;min-height:0;}
-.ocgo-tab.ocgo-active{display:flex;}
-#ocgo-tab-data,#ocgo-tab-history{overflow:auto;}
-#ocgo-tab-data > *,#ocgo-tab-history > *{flex-shrink:0;}
-#ocgo-tab-log{overflow:hidden;}
-#ocgo-ws-row{display:flex;gap:6px;align-items:center;}
-#ocgo-ws{flex:1;background:#0d1014;color:#dfe4e9;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:4px 6px;}
-#ocgo-ws option{background:#0d1014;color:#dfe4e9;}
-#ocgo-btns{display:flex;flex-wrap:wrap;gap:6px;}
-#ocgo-btns button,#ocgo-analyze-btns button{background:rgba(255,255,255,.05);color:#dfe4e9;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:5px 8px;cursor:pointer;}
-#ocgo-btns button:hover,#ocgo-analyze-btns button:hover{background:rgba(255,255,255,.1);color:#fff;}
-#ocgo-btns button.ocgo-primary,#ocgo-analyze-btns button.ocgo-primary{background:#e8ecf1;border-color:#e8ecf1;color:#0b0d11;font-weight:600;}
-#ocgo-btns button.ocgo-primary:hover,#ocgo-analyze-btns button.ocgo-primary:hover{background:#fff;border-color:#fff;color:#0b0d11;}
-#ocgo-btns button.ocgo-stop{background:#e0a93c;border-color:#e0a93c;color:#0b0d11;display:none;}
-#ocgo-clear-confirm{display:none;align-items:center;gap:6px;font-size:12px;color:#e0a93c;}
-#ocgo-clear-confirm.ocgo-show{display:inline-flex;}
-#ocgo-clear-confirm .ocgo-clear-yes{background:#e0a93c;border-color:#e0a93c;color:#0b0d11;font-weight:600;}
-#ocgo-clear-confirm .ocgo-clear-yes:hover{background:#fff;border-color:#fff;color:#0b0d11;}
-#ocgo-status{color:#8d97a4;min-height:16px;}
-#ocgo-history-state{color:#6f7885;font-size:11px;}
-#ocgo-range{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
-#ocgo-range select,#ocgo-range input,#ocgo-custom-range input{background:#0d1014;color:#dfe4e9;border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:4px 6px;}
-#ocgo-range select option,#ocgo-range input option{background:#0d1014;color:#dfe4e9;}
-#ocgo-custom-range{display:none;gap:6px;align-items:center;flex-wrap:wrap;}
-#ocgo-custom-range.ocgo-show{display:flex;}
-#ocgo-analysis{background:#07090c;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px;flex:1 1 auto;min-height:80px;max-height:420px;overflow:auto;}
-#ocgo-analysis h4{margin:8px 0 4px;color:#cfd5dc;font-size:12px;letter-spacing:.3px;}
-.ocgo-metrics{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;}
-.ocgo-metric{flex:1 1 90px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:6px;text-align:center;}
-.ocgo-metric span{display:block;color:#7f8995;font-size:10px;letter-spacing:.4px;}
-.ocgo-metric b{font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e4e8ed;}
-.ocgo-tbl{width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;}
-.ocgo-tbl th,.ocgo-tbl td{border:1px solid rgba(255,255,255,.08);padding:3px 6px;text-align:right;}
-.ocgo-tbl th{background:rgba(255,255,255,.04);color:#8d97a4;}
-.ocgo-tbl td{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-.ocgo-tbl td:first-child,.ocgo-tbl th:first-child{text-align:left;font-family:inherit;}
-#ocgo-log-wrap{border-top:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;flex:1 1 auto;min-height:120px;}
-#ocgo-log-head{display:flex;align-items:center;gap:6px;padding:6px 8px;cursor:pointer;user-select:none;}
-#ocgo-log-list{flex:1 1 150px;min-height:80px;overflow:auto;padding:4px 8px;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
-.ocgo-log{display:flex;gap:6px;padding:1px 0;border-bottom:1px dashed rgba(255,255,255,.06);word-break:break-all;}
-.ocgo-log .ocgo-lv{flex:0 0 42px;font-weight:700;}
-.ocgo-log .ocgo-cat{flex:0 0 64px;color:#6f7885;}
-.ocgo-log.ocgo-info .ocgo-lv{color:#9db4e8;}
-.ocgo-log.ocgo-warn .ocgo-lv{color:#e0a93c;}
-.ocgo-log.ocgo-error .ocgo-lv{color:#f0716f;}
-#ocgo-stats{color:#6f7885;font-size:11px;}
-#ocgo-view-custom{display:none;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
-#ocgo-view-custom.ocgo-show{display:flex;}
-#ocgo-panel{min-width:380px;min-height:320px;}
-#ocgo-panel .ocgo-rh{position:absolute;z-index:6;}
-#ocgo-panel .ocgo-rh-n{top:-3px;left:10px;right:10px;height:6px;cursor:ns-resize;}
-#ocgo-panel .ocgo-rh-s{bottom:-3px;left:10px;right:10px;height:6px;cursor:ns-resize;}
-#ocgo-panel .ocgo-rh-e{right:-3px;top:10px;bottom:10px;width:6px;cursor:ew-resize;}
-#ocgo-panel .ocgo-rh-w{left:-3px;top:10px;bottom:10px;width:6px;cursor:ew-resize;}
-#ocgo-panel .ocgo-rh-ne{top:-3px;right:-3px;width:12px;height:12px;cursor:nesw-resize;}
-#ocgo-panel .ocgo-rh-nw{top:-3px;left:-3px;width:12px;height:12px;cursor:nwse-resize;}
-#ocgo-panel .ocgo-rh-se{bottom:-3px;right:-3px;width:12px;height:12px;cursor:nwse-resize;}
-#ocgo-panel .ocgo-rh-sw{bottom:-3px;left:-3px;width:12px;height:12px;cursor:nesw-resize;}
-#ocgo-panel, #ocgo-panel *{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.22) #0b0d11;}
-#ocgo-panel ::-webkit-scrollbar{width:10px;height:10px;}
-#ocgo-panel ::-webkit-scrollbar-track{background:#0b0d11;}
-#ocgo-panel ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.22);border-radius:5px;border:2px solid #0b0d11;}
-#ocgo-panel ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.35);}
-`;
-  }
-
-  function injectStyle() {
-    if (document.getElementById("ocgo-style")) return;
-    const style = document.createElement("style");
-    style.id = "ocgo-style";
-    style.textContent = css();
-    (document.head || document.documentElement).appendChild(style);
-  }  // 用缓存的 workspaceList 填充工作区下拉框，并尽量恢复 selectedId 选中项
-  function populateWorkspaceSelect(select, selectedId) {
-    if (!select) return;
-    select.innerHTML = "";
-    if (!workspaceList.length) {
-      select.appendChild(el("option", { value: "" }, workspacesLoaded ? t("ws.none") : t("ws.notLoaded")));
-      return;
-    }
-    for (const w of workspaceList) {
-      const id = typeof w === "string" ? w : w.id;
-      const name = typeof w === "string" ? w : (w.name || w.id);
-      const opt = el("option", { value: id }, name + " (" + id + ")");
-      if (id === selectedId) opt.selected = true;
-      select.appendChild(opt);
-    }
-  }
-
-  async function refreshWorkspaces() {
+  async function syncWorkspace(options) {
+    const { workspaceID, forceFull = false, signal, onProgress } = options;
+    const now = Date.now();
+    const previous = await getSyncState(workspaceID);
+    const latestInDb = await getLatestStartedAt(workspaceID);
+    const latest = Math.max(previous?.latestStartedAt ?? 0, latestInDb ?? 0);
+    const full = forceFull || !previous?.backfillComplete || latest === 0;
+    const retentionStart = now - RETENTION_DAYS * 24 * 60 * 60 * 1e3;
+    const since = full ? retentionStart : incrementalSince(previous, now, latest || void 0);
+    const knownKeys = new Set(await getRecordKeys(workspaceID, since));
+    onProgress?.({ phase: "starting", page: 0, fetched: 0, saved: 0 });
     try {
-      const data = await rpcCall("workspaces", []);
-      workspaceList = Array.isArray(data) ? data : [];
-      workspacesLoaded = true;
-      populateWorkspaceSelect(ui.ws, currentWorkspace());
-      info("workspace", t("log.wsRefreshed", { n: workspaceList.length }));
-      setStatus(t("ws.refreshed", { n: workspaceList.length }));
-    } catch (e) {
-      error("workspace", t("log.wsRefreshFail"), String(e && e.message || e));
-      setStatus(t("ws.refreshFail"));
-    }
-  }
-
-  // 历史认定：持久保存，永不过期，只有手动清空才消失。
-  // state: "none"（无历史） | "partial"（来自页面捕获，未做过全量拉取） | "ok"（有持久历史）
-  async function assessUsageCache(ws) {
-    const usage = await loadUsage(ws);
-    if (!usage.meta || !usage.records.length) {
-      return { state: "none", text: t("cache.none"), meta: usage.meta, usage };
-    }
-    const meta = usage.meta;
-    if (!meta.complete || !meta.lastFullFetchAt) {
-      return { state: "partial", text: t("cache.partial", { n: meta.count }), meta, usage };
-    }
-    return { state: "ok", text: t("cache.ok", { time: fmtTime(meta.lastFullFetchAt), n: meta.count }), meta, usage };
-  }
-  function fmtTime(ms) { return ms ? fmtTime24(new Date(ms).toISOString()) : "?"; }
-  // 24 小时制：yyyy/MM/dd HH:mm:ss
-  function fmtTime24(iso) {
-    const d = new Date(iso);
-    const pad = (n) => String(n).padStart(2, "0");
-    return d.getFullYear() + "/" + pad(d.getMonth() + 1) + "/" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
-  }
-
-  async function renderCacheState() {
-    if (!ui) return;
-    const ws = currentWorkspace();
-    const parts = [];
-    if (ws) {
-      const a = await assessUsageCache(ws);
-      if (a.state !== "none") parts.push(t("cache.usageState", { state: a.state === "ok" ? "" : t("cache.usageIncompleteTag"), n: a.meta.count, time: fmtTime(a.meta.lastUpdatedAt) }));
-    }
-    ui.cacheState.textContent = parts.length ? t("cache.statePrefix") + parts.join("；") : t("cache.stateNone");
-  }
-
-  // =====================================================================
-  // 使用历史：近期 API 使用情况和成本（请求时间/模型/用量/成本）
-  // =====================================================================
-  function historyRange() {
-    if (!ui) return { from: 0, to: Date.now(), label: t("range.all") };
-    const mode = ui.historyRange.value;
-    const now = new Date();
-    const end = now.getTime();
-    if (mode === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); return { from: d.getTime(), to: end, label: t("range.today") }; }
-    if (mode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: t("range.1d") };
-    if (mode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: t("range.30d") };
-    if (mode === "all") return { from: 0, to: Infinity, label: t("range.all") };
-    if (mode === "custom") {
-      const from = ui.historyFrom.value ? new Date(ui.historyFrom.value).getTime() : 0;
-      const to = ui.historyTo.value ? new Date(ui.historyTo.value).getTime() : end;
-      return { from, to, label: t("range.custom") };
-    }
-    return { from: end - 7 * 24 * 3600 * 1000, to: end, label: t("range.7d") };
-  }
-
-  async function renderHistory() {
-    if (!ui) return;
-    const ws = currentWorkspace();
-    if (!ws) { ui.historyTable.innerHTML = "<p>" + t("history.noWorkspace") + "</p>"; ui.historyStatus.textContent = ""; return; }
-    const usage = await loadUsage(ws);
-    if (!usage.meta || !usage.records.length) {
-      ui.historyTable.innerHTML = "<p>" + t("history.noData") + "</p>";
-      ui.historyStatus.textContent = "";
-      return;
-    }
-    const range = historyRange();
-    const rows = usage.records
-      .filter((r) => { const t = new Date(r.timeCreated).getTime(); return t >= range.from && t <= range.to; })
-      .sort((a, b) => (a.timeCreated < b.timeCreated ? 1 : -1));
-    const LIMIT = 300;
-    const shown = rows.slice(0, LIMIT);
-    ui.historyStatus.textContent = t("history.summary", { n: rows.length, label: range.label, m: usage.records.length });
-    let html = "<table class='ocgo-tbl'><tr><th>" + t("history.col.time") + "</th><th>" + t("history.col.model") + "</th><th>" + t("history.col.input") + "</th><th>" + t("history.col.reasoning") + "</th><th>" + t("history.col.cacheRead") + "</th><th>" + t("history.col.output") + "</th><th>" + t("history.col.cost") + "</th></tr>";
-    for (const r of shown) {
-      html += "<tr><td>" + fmtTime24(r.timeCreated) + "</td><td>" + (r.model || "-") + "</td><td>" + fmtNum(r.inputTokens) +
-        "</td><td>" + fmtNum(r.reasoningTokens) + "</td><td>" + fmtNum(r.cacheReadTokens) + "</td><td>" + fmtNum(r.outputTokens) +
-        "</td><td>" + fmtUsd(r.cost) + "</td></tr>";
-    }
-    html += "</table>";
-    if (rows.length > LIMIT) html += "<p style='color:#8b949e'>" + t("history.limitNote", { n: LIMIT, m: rows.length }) + "</p>";
-    ui.historyTable.innerHTML = rows.length ? html : "<p>" + t("history.noRecords") + "</p>";
-    info("history", t("log.historyRendered"), { range: range.label, rows: rows.length });
-  }
-
-  async function exportHistoryCsv() {
-    const ws = currentWorkspace();
-    if (!ws) return;
-    const usage = await loadUsage(ws);
-    const range = historyRange();
-    const rows = usage.records
-      .filter((r) => { const t = new Date(r.timeCreated).getTime(); return t >= range.from && t <= range.to; })
-      .sort((a, b) => (a.timeCreated < b.timeCreated ? 1 : -1));
-    const esc = (v) => '"' + String(v === null || v === undefined ? "" : v).replace(/"/g, '""') + '"';
-    const lines = [[t("history.col.time"), t("history.col.model"), t("history.col.input"), t("history.col.reasoning"), t("history.col.cacheRead"), t("history.col.output"), t("history.col.costUsd")].join(",")];
-    for (const r of rows) {
-      lines.push([fmtTime24(r.timeCreated), r.model || "", num(r.inputTokens),
-        num(r.reasoningTokens), num(r.cacheReadTokens), num(r.outputTokens),
-        (num(r.cost) / MICROCENTS_PER_DOLLAR).toFixed(4)].map(esc).join(","));
-    }
-    downloadText("opencodego-history-" + Date.now() + ".csv", "\uFEFF" + lines.join("\r\n"));
-    info("history", t("log.historyExported"), { rows: rows.length, range: range.label });
-  }
-
-  let rangeMode = "today"; // 与下拉框默认“当天”保持一致（首次分析不再误用最近7天）
-  function currentRange() {
-    const now = new Date();
-    const end = now.getTime();
-    if (rangeMode === "today") {
-      const d = new Date(now); d.setHours(0, 0, 0, 0);
-      return { from: d.getTime(), to: end, label: t("range.today") };
-    }
-    if (rangeMode === "1d") return { from: end - 24 * 3600 * 1000, to: end, label: t("range.1d") };
-    if (rangeMode === "30d") return { from: end - 30 * 24 * 3600 * 1000, to: end, label: t("range.30d") };
-    if (rangeMode === "all") return { from: 0, to: Infinity, label: t("range.all") };
-    if (rangeMode === "custom") {
-      const from = ui.customFrom.value ? new Date(ui.customFrom.value).getTime() : end - 7 * 24 * 3600 * 1000;
-      const to = ui.customTo.value ? new Date(ui.customTo.value).getTime() : end;
-      return { from, to, label: t("range.customLabel", { from: ui.customFrom.value || "?", to: ui.customTo.value || "?" }) };
-    }
-    return { from: end - 7 * 24 * 3600 * 1000, to: end, label: t("range.7d") };
-  }
-
-  // 分析：不自动触发全量拉取（避免误触发大量请求），先明确告诉用户历史状态
-  async function runAnalysis(forceRefresh) {
-    const ws = currentWorkspace();
-    if (!ws) { setStatus(t("status.noWorkspace")); return; }
-    let cacheNote = "";
-    let cacheStateFlag = "none";
-    let usage;
-    if (forceRefresh) {
-      if (!setTaskBusy(t("task.fetchLatest"))) return;
-      setStatus(t("status.fetchingLatest"));
-      try {
-        const records = await fetchAllUsage(ws, (p) => {
-          setStatus(t("status.fetchLatestPage", { page: p.page, n: p.fetched }));
-        });
-        usage = await loadUsage(ws);
-        if (records.stopped) setStatus(t("status.analysisStopped", { n: usage.records.length }));
-      } finally {
-        finishTask();
+      let result;
+      let lastError;
+      let cursorRestarted = false;
+      const sizes = full ? FALLBACK_PAGE_SIZES : [DEFAULT_PAGE_SIZE, ...FALLBACK_PAGE_SIZES.filter((size) => size !== DEFAULT_PAGE_SIZE)];
+      for (const size of sizes) {
+        try {
+          try {
+            result = await runPages(workspaceID, since, size, knownKeys, !full, signal, onProgress);
+          } catch (error) {
+            if (error instanceof ApiError && error.kind === "cursor" && !cursorRestarted) {
+              cursorRestarted = true;
+              onProgress?.({ phase: "starting", page: 0, fetched: 0, saved: 0, message: "cursor restart" });
+              result = await runPages(workspaceID, since, size, knownKeys, !full, signal, onProgress);
+            } else {
+              throw error;
+            }
+          }
+          break;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") throw error;
+          if (error instanceof Error && error.name === "AbortError") throw error;
+          if (error instanceof ApiError && error.kind === "bad-request") {
+            lastError = error;
+            continue;
+          }
+          throw error;
+        }
       }
+      if (!result) throw lastError ?? new ApiError("bad-request", "The request log API rejected all supported page sizes.");
+      await updateSyncState(workspaceID, (current) => mergeState(current, workspaceID, since, now, result, full));
+      onProgress?.({ phase: "complete", page: result.pages, fetched: result.fetched, saved: result.added });
+      return {
+        complete: result.complete,
+        stopped: false,
+        cacheHit: result.cacheHit,
+        pages: result.pages,
+        fetched: result.fetched,
+        added: result.added,
+        lastStartedAt: result.lastStartedAt,
+        retentionDays: result.retentionDays
+      };
+    } catch (error) {
+      if (isAbort(error)) {
+        await updateSyncState(workspaceID, (current) => failedState(current, workspaceID, now, "Sync stopped by user."));
+        onProgress?.({ phase: "stopped", page: 0, fetched: 0, saved: 0 });
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      await updateSyncState(workspaceID, (current) => failedState(current, workspaceID, now, message));
+      onProgress?.({ phase: "error", page: 0, fetched: 0, saved: 0, message });
+      throw error;
+    }
+  }
+  async function persistCapturedPage(workspaceID, items) {
+    const records = items.map((item) => normalizeRawRequest(item, workspaceID)).filter((item) => item !== null && item.category === "inference");
+    if (!records.length) return 0;
+    await putRecords(records);
+    await updateSyncState(workspaceID, (previous) => {
+      const latest = Math.max(previous?.latestStartedAt ?? 0, ...records.map((record) => record.startedAt));
+      return {
+        workspaceID,
+        retentionDays: previous?.retentionDays ?? RETENTION_DAYS,
+        coverageStart: previous?.coverageStart,
+        coverageEnd: previous?.coverageEnd,
+        latestStartedAt: latest,
+        lastSyncAttemptAt: previous?.lastSyncAttemptAt,
+        lastSuccessfulSyncAt: previous?.lastSuccessfulSyncAt,
+        backfillComplete: previous?.backfillComplete ?? false,
+        gapDetected: previous?.gapDetected ?? false,
+        legacyImportedAt: previous?.legacyImportedAt,
+        lastError: previous?.lastError
+      };
+    });
+    return records.length;
+  }
+
+  // src/format.ts
+  function formatNumber(value) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
+    return Math.round(value).toLocaleString();
+  }
+  function formatCompact(value) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
+    const abs = Math.abs(value);
+    if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+    if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+    return Math.round(value).toLocaleString();
+  }
+  function formatPercent(value, digits = 1) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "N/A";
+    return `${(value * 100).toFixed(digits)}%`;
+  }
+  function formatUsd(value) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "—";
+    if (value === 0) return "$0.00";
+    if (value >= 1) return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (value >= 0.01) return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+    return `$${value.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+  }
+  function formatMs(value) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "N/A";
+    if (value < 1e3) return `${Math.round(value)} ms`;
+    return `${(value / 1e3).toFixed(value < 1e4 ? 2 : 1)} s`;
+  }
+  function formatTps(value) {
+    if (value === null || value === void 0 || !Number.isFinite(value)) return "N/A";
+    return `${value.toFixed(1)} tok/s`;
+  }
+  function formatBytes(value) {
+    if (value === void 0 || !Number.isFinite(value)) return "—";
+    if (value >= 1e9) return `${(value / 1e9).toFixed(2)} GB`;
+    if (value >= 1e6) return `${(value / 1e6).toFixed(1)} MB`;
+    if (value >= 1e3) return `${(value / 1e3).toFixed(1)} KB`;
+    return `${value} B`;
+  }
+  var dateTime = new Intl.DateTimeFormat(void 0, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  });
+  var shortDateTime = new Intl.DateTimeFormat(void 0, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  var shortDate = new Intl.DateTimeFormat(void 0, { month: "short", day: "numeric" });
+  function formatDateTime(timestamp) {
+    return timestamp === void 0 ? "—" : dateTime.format(new Date(timestamp));
+  }
+  function formatAxisTime(timestamp, bucketMs) {
+    const day = 864e5;
+    return bucketMs >= day ? shortDate.format(new Date(timestamp)) : shortDateTime.format(new Date(timestamp));
+  }
+  function formatRelative(timestamp, now = Date.now(), language = "en") {
+    if (!timestamp) return "—";
+    const delta = now - timestamp;
+    const formatter = new Intl.RelativeTimeFormat(language === "zh" ? "zh-CN" : "en", { numeric: "auto" });
+    if (delta < 6e4) return formatter.format(-Math.max(0, Math.round(delta / 1e3)), "second");
+    if (delta < 36e5) return formatter.format(-Math.floor(delta / 6e4), "minute");
+    if (delta < 864e5) return formatter.format(-Math.floor(delta / 36e5), "hour");
+    return formatter.format(-Math.floor(delta / 864e5), "day");
+  }
+  function csvEscape(value) {
+    let text2 = String(value ?? "");
+    if (/^[=+\-@\t\r]/.test(text2)) text2 = `'${text2}`;
+    return /[",\r\n]/.test(text2) ? `"${text2.replace(/"/g, '""')}"` : text2;
+  }
+  function downloadText(filename, text2, type = "text/plain;charset=utf-8") {
+    const blob = new Blob([text2], { type });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.documentElement.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5e3);
+  }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  // src/pricing.ts
+  var GO_PRICING_URL = "https://opencode.ai/v2/docs/console/go/";
+  var GO_PRICING_CACHE_KEY = "pricing:opencode-go";
+  var GO_PRICING_SCHEMA_VERSION = 1;
+  var GO_PRICING_TTL_MS = 3 * 24 * 60 * 60 * 1e3;
+  var TOKENS_PER_PRICE_UNIT = 1e6;
+  function normalized(value) {
+    return value.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+  function tableHeaders(table) {
+    return [...table.querySelectorAll("thead th")].map((cell) => normalized(cell.textContent ?? ""));
+  }
+  function parsePrice(value) {
+    const text2 = value.replace(/,/g, "").trim();
+    if (!text2 || text2 === "-") return null;
+    if (/^free$/i.test(text2)) return 0;
+    const match = text2.match(/-?\d+(?:\.\d+)?/);
+    if (!match) return null;
+    const amount = Number(match[0]);
+    return Number.isFinite(amount) && amount >= 0 ? amount : null;
+  }
+  function parseContextMarker(label) {
+    let displayName = label;
+    let maxContextTokens;
+    let minContextTokens;
+    let period;
+    const upper = displayName.match(/\(\s*(?:≤|<=|<)\s*([\d.]+)K tokens\s*\)\s*$/i);
+    if (upper) {
+      maxContextTokens = Math.round(Number(upper[1]) * 1e3);
+      displayName = displayName.slice(0, upper.index).trim();
     } else {
-      const assess = await assessUsageCache(ws);
-      usage = assess.usage;
-      if (assess.state === "none") {
-        setStatus(t("status.noHistory"));
-        setAnalysis(t("status.analysisNoHistoryHtml"));
+      const lower = displayName.match(/\(\s*>\s*([\d.]+)K tokens\s*\)\s*$/i);
+      if (lower) {
+        minContextTokens = Math.round(Number(lower[1]) * 1e3) + 1;
+        displayName = displayName.slice(0, lower.index).trim();
+      }
+    }
+    const periodMatch = displayName.match(/\((Off-Peak|Peak)\)\s*$/i);
+    if (periodMatch) {
+      period = periodMatch[1].toLowerCase() === "peak" ? "peak" : "off-peak";
+      displayName = displayName.slice(0, periodMatch.index).trim();
+    }
+    return { displayName, maxContextTokens, minContextTokens, period };
+  }
+  function parseGoPricingHtml(html) {
+    const document2 = new DOMParser().parseFromString(html, "text/html");
+    const tables = [...document2.querySelectorAll("table")];
+    const pricingTable = tables.find((table) => {
+      const headers = tableHeaders(table);
+      return headers.includes("model") && headers.includes("input") && headers.includes("output") && headers.includes("cached read") && headers.includes("cached write");
+    });
+    const endpointTable = tables.find((table) => {
+      const headers = tableHeaders(table);
+      return headers.includes("model") && headers.includes("model id");
+    });
+    if (!pricingTable || !endpointTable) {
+      throw new Error("Go pricing tables were not found.");
+    }
+    const modelIDs = /* @__PURE__ */ new Map();
+    for (const row of [...endpointTable.querySelectorAll("tbody tr")]) {
+      const cells = [...row.querySelectorAll("td")];
+      if (cells.length < 2) continue;
+      const name = normalized(cells[0].textContent ?? "");
+      const modelID = (cells[1].textContent ?? "").trim();
+      if (name && modelID) modelIDs.set(name, modelID);
+    }
+    const tiers = [];
+    for (const row of [...pricingTable.querySelectorAll("tbody tr")]) {
+      const cells = [...row.querySelectorAll("td")];
+      if (cells.length < 5) continue;
+      const rawName = (cells[0].textContent ?? "").replace(/\s+/g, " ").trim();
+      const marker = parseContextMarker(rawName);
+      const modelID = modelIDs.get(normalized(marker.displayName));
+      if (!modelID) continue;
+      const input = parsePrice(cells[1].textContent ?? "");
+      const output = parsePrice(cells[2].textContent ?? "");
+      if (input === null || output === null) continue;
+      tiers.push({
+        modelID,
+        displayName: marker.displayName,
+        input,
+        output,
+        cacheRead: parsePrice(cells[3].textContent ?? ""),
+        cacheWrite: parsePrice(cells[4].textContent ?? ""),
+        ...marker.maxContextTokens === void 0 ? {} : { maxContextTokens: marker.maxContextTokens },
+        ...marker.minContextTokens === void 0 ? {} : { minContextTokens: marker.minContextTokens },
+        ...marker.period === void 0 ? {} : { period: marker.period }
+      });
+    }
+    if (!tiers.length) throw new Error("No valid Go pricing rows were parsed.");
+    return tiers;
+  }
+  function isGoPricingCacheFresh(cache, now = Date.now()) {
+    return Boolean(
+      cache && cache.schemaVersion === GO_PRICING_SCHEMA_VERSION && cache.tiers.length > 0 && now - cache.fetchedAt >= 0 && now - cache.fetchedAt < GO_PRICING_TTL_MS
+    );
+  }
+  async function loadGoPricing(now = Date.now()) {
+    const cached = await getMeta(GO_PRICING_CACHE_KEY);
+    if (isGoPricingCacheFresh(cached, now)) {
+      return { pricing: cached, refreshed: false };
+    }
+    try {
+      const response = await fetch(GO_PRICING_URL, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { Accept: "text/html" }
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const tiers = parseGoPricingHtml(await response.text());
+      const pricing = {
+        fetchedAt: now,
+        source: GO_PRICING_URL,
+        schemaVersion: GO_PRICING_SCHEMA_VERSION,
+        tiers
+      };
+      await putMeta(GO_PRICING_CACHE_KEY, pricing);
+      return { pricing, refreshed: true };
+    } catch (error) {
+      return {
+        pricing: cached,
+        refreshed: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  function pricingPeriodForTimestamp(timestamp) {
+    const date = new Date(timestamp);
+    const day = date.getUTCDay();
+    const minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+    const weekday = day >= 1 && day <= 5;
+    const peak = weekday && (minutes >= 60 && minutes < 240 || minutes >= 360 && minutes < 600);
+    return peak ? "peak" : "off-peak";
+  }
+  function selectPricingTier(tiers, record) {
+    if (record.provider && !["opencode", "opencode-go"].includes(record.provider.toLowerCase())) {
+      return void 0;
+    }
+    const modelID = (record.model || record.requestedModel).toLowerCase();
+    let candidates = tiers.filter((tier) => tier.modelID.toLowerCase() === modelID);
+    if (!candidates.length) return void 0;
+    const period = pricingPeriodForTimestamp(record.startedAt);
+    const periodCandidates = candidates.filter((tier) => tier.period !== void 0);
+    if (periodCandidates.length) {
+      candidates = periodCandidates.filter((tier) => tier.period === period);
+    }
+    if (!candidates.length) return void 0;
+    const contextTokens = record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens + record.cacheWrite1hTokens;
+    const matching = candidates.filter((tier) => tier.minContextTokens === void 0 || contextTokens >= tier.minContextTokens).filter((tier) => tier.maxContextTokens === void 0 || contextTokens <= tier.maxContextTokens);
+    if (!matching.length) return void 0;
+    return matching.sort((a, b) => (a.maxContextTokens ?? Number.MAX_SAFE_INTEGER) - (b.maxContextTokens ?? Number.MAX_SAFE_INTEGER))[0];
+  }
+  function estimateModelCostBreakdown(records, model, tiers) {
+    if (!tiers?.length) return null;
+    let input = 0;
+    let output = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    for (const record of records) {
+      if (record.model !== model.model || record.provider !== model.provider) continue;
+      const tier = selectPricingTier(tiers, record);
+      if (!tier) return null;
+      input += record.inputTokens * tier.input / TOKENS_PER_PRICE_UNIT;
+      output += record.outputTokens * tier.output / TOKENS_PER_PRICE_UNIT;
+      cacheRead += record.cacheReadTokens * (tier.cacheRead ?? 0) / TOKENS_PER_PRICE_UNIT;
+      cacheWrite += (record.cacheWriteTokens + record.cacheWrite1hTokens) * (tier.cacheWrite ?? 0) / TOKENS_PER_PRICE_UNIT;
+    }
+    const estimatedTotal = input + output + cacheRead + cacheWrite;
+    if (estimatedTotal <= 0) {
+      if (model.costUsd <= 0) {
+        return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, estimated: true };
+      }
+      return null;
+    }
+    const scale = model.costUsd / estimatedTotal;
+    return {
+      input: input * scale,
+      output: output * scale,
+      cacheRead: cacheRead * scale,
+      cacheWrite: cacheWrite * scale,
+      total: model.costUsd,
+      estimated: true
+    };
+  }
+
+  // src/version.ts
+  var APP_VERSION = "1.1.0";
+
+  // src/ui/charts.ts
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var WIDTH = 620;
+  var HEIGHT = 210;
+  var PAD = { left: 48, right: 14, top: 18, bottom: 28 };
+  function svgElement(tag, attrs = {}) {
+    const node2 = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) node2.setAttribute(key, String(value));
+    return node2;
+  }
+  function hideChartTooltip(tooltip) {
+    if (!tooltip) return;
+    tooltip.classList.add("ocgo-hidden");
+    tooltip.replaceChildren();
+  }
+  function tooltipRows(kind, bucket, language) {
+    if (kind === "tokens") {
+      return [
+        [t(language, "table.totalTokens"), formatNumber(bucket.totalTokens)],
+        [t(language, "table.input"), formatNumber(bucket.inputTokens)],
+        [t(language, "table.cacheRead"), formatNumber(bucket.cacheReadTokens)],
+        [t(language, "table.cacheWrite"), formatNumber(bucket.cacheWriteTokens)],
+        [t(language, "table.output"), formatNumber(bucket.outputTokens)]
+      ];
+    }
+    if (kind === "cache") {
+      return [
+        [t(language, "table.hitRate"), formatPercent(bucket.cacheHitRate, 2)],
+        [t(language, "table.cacheRead"), formatNumber(bucket.cacheReadTokens)],
+        [t(language, "table.cacheWrite"), formatNumber(bucket.cacheWriteTokens)]
+      ];
+    }
+    if (kind === "ttft") {
+      return [
+        [t(language, "table.ttftAvg"), formatMs(bucket.ttftAvg)],
+        [t(language, "table.ttftSlowest"), formatMs(bucket.ttftSlowest)],
+        [t(language, "tooltip.ttftSamples"), t(language, "metric.samples", { n: bucket.ttftSamples })]
+      ];
+    }
+    return [
+      [t(language, "table.tpsAvg"), formatTps(bucket.tpsAvg)],
+      [t(language, "table.tpsSlowest"), formatTps(bucket.tpsSlowest)],
+      [t(language, "tooltip.tpsSamples"), t(language, "metric.samples", { n: bucket.tpsSamples })]
+    ];
+  }
+  function showDataTooltip(tooltip, headText, values, container, x, y, footer) {
+    tooltip.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "ocgo-tooltip-head";
+    head.textContent = headText;
+    const rows = document.createElement("dl");
+    rows.className = "ocgo-tooltip-grid";
+    for (const [label, value] of values) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const detail = document.createElement("dd");
+      detail.textContent = value;
+      rows.append(term, detail);
+    }
+    tooltip.append(head, rows);
+    if (footer) {
+      const note = document.createElement("div");
+      note.className = "ocgo-tooltip-note";
+      note.textContent = footer;
+      tooltip.appendChild(note);
+    }
+    tooltip.classList.remove("ocgo-hidden");
+    positionChartTooltip(tooltip, container, x, y);
+  }
+  function showChartTooltip(tooltip, bucket, language, kind, container, x, y) {
+    showDataTooltip(
+      tooltip,
+      `${formatDateTime(bucket.start)} – ${formatDateTime(bucket.end)}`,
+      tooltipRows(kind, bucket, language),
+      container,
+      x,
+      y
+    );
+  }
+  function tooltipAriaLabel(kind, bucket, language) {
+    const values = tooltipRows(kind, bucket, language).map(([label, value]) => `${label} ${value}`).join(" · ");
+    return `${formatAxisTime(bucket.start, bucket.end - bucket.start)} · ${values}`;
+  }
+  function positionChartTooltip(tooltip, container, x, y) {
+    const panel2 = container.closest(".ocgo-panel");
+    const bounds = panel2?.getBoundingClientRect();
+    const leftBound = (bounds?.left ?? 0) + 8;
+    const topBound = (bounds?.top ?? 0) + 8;
+    const rightBound = (bounds?.right ?? window.innerWidth) - 8;
+    const bottomBound = (bounds?.bottom ?? window.innerHeight) - 8;
+    const gap = 12;
+    const width = tooltip.offsetWidth;
+    const height = tooltip.offsetHeight;
+    let left = x + gap;
+    let top = y + gap;
+    if (left + width > rightBound) left = x - width - gap;
+    if (top + height > bottomBound) top = y - height - gap;
+    left = Math.max(leftBound, Math.min(left, rightBound - width));
+    top = Math.max(topBound, Math.min(top, bottomBound - height));
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+  }
+  function addHoverTargets(svg, buckets, plotWidth, plotHeight, container, tooltip, language, kind) {
+    if (!tooltip || !buckets.length) return;
+    const denominator = Math.max(1, buckets.length - 1);
+    const active = svgElement("rect", {
+      x: PAD.left,
+      y: PAD.top,
+      width: 0,
+      height: plotHeight,
+      class: "ocgo-hover-band"
+    });
+    active.style.display = "none";
+    svg.appendChild(active);
+    buckets.forEach((bucket, index) => {
+      const leftRatio = buckets.length === 1 ? 0 : Math.max(0, (index - 0.5) / denominator);
+      const rightRatio = buckets.length === 1 ? 1 : Math.min(1, (index + 0.5) / denominator);
+      const x = PAD.left + plotWidth * leftRatio;
+      const width = Math.max(1, plotWidth * (rightRatio - leftRatio));
+      const hit = svgElement("rect", {
+        x,
+        y: PAD.top,
+        width,
+        height: plotHeight,
+        class: "ocgo-hover-target",
+        tabindex: 0,
+        role: "img",
+        "aria-label": tooltipAriaLabel(kind, bucket, language)
+      });
+      const showAt = (x2, clientX, clientY) => {
+        active.setAttribute("x", String(x2));
+        active.setAttribute("width", String(width));
+        active.style.display = "";
+        showChartTooltip(tooltip, bucket, language, kind, container, clientX, clientY);
+      };
+      const show = (event) => {
+        showAt(x, event.clientX, event.clientY);
+      };
+      hit.addEventListener("pointerenter", show);
+      hit.addEventListener("pointermove", (event) => positionChartTooltip(tooltip, container, event.clientX, event.clientY));
+      hit.addEventListener("focus", () => {
+        const rect = hit.getBoundingClientRect();
+        showAt(x, rect.left + rect.width / 2, rect.top + rect.height / 2);
+      });
+      hit.addEventListener("blur", () => {
+        active.style.display = "none";
+        hideChartTooltip(tooltip);
+      });
+      svg.appendChild(hit);
+    });
+    svg.addEventListener("pointerleave", () => {
+      active.style.display = "none";
+      hideChartTooltip(tooltip);
+    });
+  }
+  function emptyState(container, language, tooltip) {
+    hideChartTooltip(tooltip);
+    container.replaceChildren();
+    const empty = document.createElement("div");
+    empty.className = "ocgo-chart-empty";
+    empty.textContent = t(language, "chart.empty");
+    container.appendChild(empty);
+  }
+  function addLegend(container, items) {
+    const legend = document.createElement("div");
+    legend.className = "ocgo-legend";
+    for (const item of items) {
+      const entry = document.createElement("span");
+      const swatch = document.createElement("i");
+      swatch.style.background = item.color;
+      entry.append(swatch, document.createTextNode(item.label));
+      legend.appendChild(entry);
+    }
+    container.appendChild(legend);
+  }
+  function frame(svg, bucketCount) {
+    const plotWidth = WIDTH - PAD.left - PAD.right;
+    const plotHeight = HEIGHT - PAD.top - PAD.bottom;
+    for (let i = 0; i <= 3; i += 1) {
+      const y = PAD.top + plotHeight * i / 3;
+      svg.appendChild(svgElement("line", {
+        x1: PAD.left,
+        x2: WIDTH - PAD.right,
+        y1: y,
+        y2: y,
+        class: "ocgo-grid-line"
+      }));
+    }
+    if (bucketCount > 0) {
+      const labels = Math.min(5, bucketCount);
+      for (let i = 0; i < labels; i += 1) {
+        const ratio = labels === 1 ? 0 : i / (labels - 1);
+        const x = PAD.left + plotWidth * ratio;
+        const bucketIndex = Math.round((bucketCount - 1) * ratio);
+        svg.appendChild(svgElement("line", {
+          x1: x,
+          x2: x,
+          y1: PAD.top,
+          y2: HEIGHT - PAD.bottom,
+          class: "ocgo-grid-line ocgo-grid-line-v"
+        }));
+        const label = svgElement("text", {
+          x,
+          y: HEIGHT - 8,
+          "text-anchor": i === 0 ? "start" : i === labels - 1 ? "end" : "middle",
+          class: "ocgo-axis-label"
+        });
+        label.dataset.index = String(bucketIndex);
+        svg.appendChild(label);
+      }
+    }
+    return { plotWidth, plotHeight };
+  }
+  function setXAxisLabels(svg, buckets) {
+    const bucketMs = buckets.length > 1 ? Math.max(1, buckets[1].start - buckets[0].start) : 24 * 60 * 60 * 1e3;
+    const labels = [...svg.querySelectorAll(".ocgo-axis-label[data-index]")];
+    for (const label of labels) {
+      const index = Number(label.dataset.index ?? 0);
+      const bucket = buckets[index];
+      if (bucket) label.textContent = formatAxisTime(bucket.start, bucketMs);
+    }
+  }
+  function renderLineSeries(svg, values, color, yMax, plotWidth, plotHeight) {
+    const denominator = Math.max(1, values.length - 1);
+    const xAt = (index) => PAD.left + plotWidth * index / denominator;
+    const yAt = (value) => PAD.top + plotHeight - value / yMax * plotHeight;
+    let segment = "";
+    const points = [];
+    values.forEach((value, index) => {
+      if (value === null || !Number.isFinite(value)) {
+        if (segment) {
+          svg.appendChild(svgElement("path", { d: segment, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+          segment = "";
+        }
         return;
       }
-      cacheNote = assess.text;
-      cacheStateFlag = assess.state;
+      const x = xAt(index);
+      const y = yAt(value);
+      segment += `${segment ? " L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`;
+      points.push([x, y]);
+    });
+    if (segment) {
+      svg.appendChild(svgElement("path", { d: segment, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
     }
-    const range = currentRange();
-    const analysis = analyzeUsage(usage.records, range.from, range.to);
-    let html = renderAnalysis(analysis, range.label);
-    if (cacheNote && cacheStateFlag !== "ok") {
-      html = "<p style='color:#d29922'>⚠ " + cacheNote + "</p>" + html;
+    for (const [x, y] of points) {
+      svg.appendChild(svgElement("circle", { cx: x, cy: y, r: 4, fill: color, class: "ocgo-point" }));
     }
-    setAnalysis(html);
-    info("analysis", t("log.analysisDone", { label: range.label }), { range, total: analysis.total, cache: cacheStateFlag });
-    setStatus(t("status.analysisDone", { label: range.label, n: analysis.total.requests, m: usage.records.length }));
   }
-
-  // 自定义时间输入随预设范围联动（当天/1d/7d/30d/all）
-  function toLocalInput(ms) {
-    const d = new Date(ms);
-    const pad = (n) => String(n).padStart(2, "0");
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  function yLabel(svg, value, y) {
+    const text2 = svgElement("text", { x: PAD.left - 8, y: y + 4, "text-anchor": "end", class: "ocgo-axis-label" });
+    text2.textContent = value;
+    svg.appendChild(text2);
   }
-  function syncRangeInputs(mode, fromEl, toEl) {
-    const now = new Date();
-    const end = now.getTime();
-    let from;
-    if (mode === "today") { const d = new Date(now); d.setHours(0, 0, 0, 0); from = d.getTime(); }
-    else if (mode === "1d") from = end - 24 * 3600 * 1000;
-    else if (mode === "7d") from = end - 7 * 24 * 3600 * 1000;
-    else if (mode === "30d") from = end - 30 * 24 * 3600 * 1000;
-    else if (mode === "all") { fromEl.value = ""; toEl.value = toLocalInput(end); return; }
-    else return; // custom：保留用户输入
-    fromEl.value = toLocalInput(from);
-    toEl.value = toLocalInput(end);
+  function chartSvg(label) {
+    return svgElement("svg", {
+      viewBox: `0 0 ${WIDTH} ${HEIGHT}`,
+      role: "img",
+      "aria-label": label,
+      class: "ocgo-chart-svg",
+      preserveAspectRatio: "xMidYMid meet"
+    });
   }
-
-  // 面板边缘拖动调整大小（切换标签页不重置；大小记住到下次会话）
-  const PANEL_SIZE_KEY = "ocgo:panel-size";
-  function loadPanelSize() {
-    try {
-      const raw = localStorage.getItem(PANEL_SIZE_KEY);
-      if (raw) {
-        const v = JSON.parse(raw);
-        if (typeof v.w === "number" && v.w > 0 && typeof v.h === "number" && v.h > 0) return v;
+  function renderTokenMix(container, buckets, language, tooltip) {
+    hideChartTooltip(tooltip);
+    if (!buckets.some((bucket) => bucket.requests > 0)) {
+      emptyState(container, language, tooltip);
+      return;
+    }
+    container.replaceChildren();
+    const svg = chartSvg(t(language, "chart.tokens"));
+    const { plotWidth, plotHeight } = frame(svg, buckets.length);
+    const totals = buckets.map((bucket) => bucket.totalTokens);
+    const max = Math.max(1, ...totals);
+    const gap = 2;
+    const barWidth = Math.max(1, Math.min(36, plotWidth / Math.max(1, buckets.length) - gap));
+    const series = [
+      { key: "inputTokens", color: "#7698fd", label: t(language, "chart.input") },
+      { key: "cacheReadTokens", color: "#6bd586", label: t(language, "chart.cacheRead") },
+      { key: "cacheWriteTokens", color: "#f2cf76", label: t(language, "chart.cacheWrite") },
+      { key: "outputTokens", color: "#9e99f7", label: t(language, "chart.output") }
+    ];
+    buckets.forEach((bucket, index) => {
+      const x = PAD.left + plotWidth * index / Math.max(1, buckets.length - 1) - barWidth / 2;
+      let base = PAD.top + plotHeight;
+      for (const item of series) {
+        const value = bucket[item.key];
+        const height = value / max * plotHeight;
+        if (height > 0) {
+          svg.appendChild(svgElement("rect", {
+            x,
+            y: base - height,
+            width: barWidth,
+            height,
+            fill: item.color,
+            rx: 1,
+            class: "ocgo-bar"
+          }));
+        }
+        base -= height;
       }
-    } catch (e) { /* ignore */ }
-    return null;
+    });
+    yLabel(svg, formatCompact(max), PAD.top);
+    yLabel(svg, "0", PAD.top + plotHeight);
+    setXAxisLabels(svg, buckets);
+    addHoverTargets(svg, buckets, plotWidth, plotHeight, container, tooltip, language, "tokens");
+    container.appendChild(svg);
+    addLegend(container, series);
   }
-  function savePanelSize(w, h) {
-    try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify({ w: Math.round(w), h: Math.round(h) })); } catch (e) { /* ignore */ }
+  function renderCacheChart(container, buckets, language, tooltip) {
+    hideChartTooltip(tooltip);
+    const values = buckets.map((bucket) => bucket.cacheHitRate);
+    if (!values.some((value) => value !== null)) {
+      emptyState(container, language, tooltip);
+      return;
+    }
+    container.replaceChildren();
+    const svg = chartSvg(t(language, "chart.cache"));
+    const { plotWidth, plotHeight } = frame(svg, buckets.length);
+    yLabel(svg, "100%", PAD.top);
+    yLabel(svg, "50%", PAD.top + plotHeight / 2);
+    yLabel(svg, "0%", PAD.top + plotHeight);
+    renderLineSeries(svg, values, "#6bd586", 1, plotWidth, plotHeight);
+    setXAxisLabels(svg, buckets);
+    addHoverTargets(svg, buckets, plotWidth, plotHeight, container, tooltip, language, "cache");
+    container.appendChild(svg);
+  }
+  function renderPerformanceChart(container, buckets, language, tooltip, kind) {
+    hideChartTooltip(tooltip);
+    const averageValues = buckets.map((bucket) => bucket[`${kind}Avg`]);
+    const slowestValues = buckets.map((bucket) => bucket[`${kind}Slowest`]);
+    const values = [...averageValues, ...slowestValues].filter((value) => value !== null);
+    if (!values.length) {
+      emptyState(container, language, tooltip);
+      return;
+    }
+    container.replaceChildren();
+    const max = Math.max(1, ...values) * 1.1;
+    const svg = chartSvg(t(language, kind === "ttft" ? "chart.ttft" : "chart.tps"));
+    const { plotWidth, plotHeight } = frame(svg, buckets.length);
+    const formatter = kind === "ttft" ? formatMs : formatTps;
+    yLabel(svg, formatter(max), PAD.top);
+    yLabel(svg, formatter(max / 2), PAD.top + plotHeight / 2);
+    yLabel(svg, "0", PAD.top + plotHeight);
+    const averageColor = kind === "ttft" ? "#7698fd" : "#9e99f7";
+    renderLineSeries(svg, averageValues, averageColor, max, plotWidth, plotHeight);
+    renderLineSeries(svg, slowestValues, "#f2cf76", max, plotWidth, plotHeight);
+    setXAxisLabels(svg, buckets);
+    addHoverTargets(svg, buckets, plotWidth, plotHeight, container, tooltip, language, kind);
+    container.appendChild(svg);
+    addLegend(container, [
+      { label: t(language, "chart.average"), color: averageColor },
+      { label: t(language, "chart.slowest"), color: "#f2cf76" }
+    ]);
+  }
+  function renderLatencyChart(container, buckets, language, tooltip) {
+    renderPerformanceChart(container, buckets, language, tooltip, "ttft");
+  }
+  function renderTpsChart(container, buckets, language, tooltip) {
+    renderPerformanceChart(container, buckets, language, tooltip, "tps");
   }
 
-  function initResize(panel) {
-    const MIN_W = 380;
-    const MIN_H = 320;
-    const dirs = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
-    const onDown = (dir) => (e) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const rect = panel.getBoundingClientRect();
-      const startW = rect.width;
-      const startH = rect.height;
-      const move = (ev) => {
-        const dx = ev.clientX - startX;
-        const dy = ev.clientY - startY;
-        let w = startW;
-        let h = startH;
-        if (dir.includes("e")) w = startW + dx;
-        if (dir.includes("s")) h = startH + dy;
-        if (dir.includes("w")) w = startW - dx;
-        if (dir.includes("n")) h = startH - dy;
-        panel.style.width = Math.max(MIN_W, w) + "px";
-        panel.style.height = Math.max(MIN_H, h) + "px";
-      };
-      const up = () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
-        savePanelSize(parseInt(panel.style.width, 10) || panel.offsetWidth, parseInt(panel.style.height, 10) || panel.offsetHeight);
-      };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
-    };
-    for (const d of dirs) {
-      const h = document.createElement("div");
-      h.className = "ocgo-rh ocgo-rh-" + d;
-      h.addEventListener("mousedown", onDown(d));
-      panel.appendChild(h);
+  // src/ui/styles.ts
+  var panelCss = `
+:host {
+  all: initial;
+  color-scheme: dark;
+  --bg: #080808;
+  --bg2: #161616;
+  --panel: #161616;
+  --surface: #242424;
+  --surface-2: #2e2e2e;
+  --line: rgba(255,255,255,.10);
+  --line-soft: rgba(255,255,255,.078);
+  --line-strong: rgba(255,255,255,.20);
+  --fg: #fafafa;
+  --muted: #aeaeae;
+  --faint: #808080;
+  --accent: #a2bcff;
+  --blue: #7698fd;
+  --green: #6bd586;
+  --yellow: #f2cf76;
+  --violet: #9e99f7;
+  --danger: #f17471;
+  --radius: 8px;
+  --shadow-raised: 0 2px 4px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.3), 0 0 0 .5px rgba(255,255,255,.16), 0 -.5px 0 rgba(255,255,255,.06);
+  --shadow-floating: 0 16px 32px rgba(0,0,0,.3), 0 8px 16px rgba(0,0,0,.3), 0 0 0 .5px rgba(255,255,255,.16), 0 -.5px 0 rgba(255,255,255,.06);
+  font: 12px/1.48 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+* { box-sizing: border-box; }
+button, select, input { font: inherit; }
+.ocgo-fab {
+  position: fixed; right: 20px; bottom: 20px; width: 48px; height: 48px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.20); background: #080808; color: #fafafa; cursor: grab;
+  z-index: 2147483647; display: grid; place-items: center; box-shadow: 0 8px 16px rgba(0,0,0,.3), 0 0 0 .5px rgba(255,255,255,.16);
+  touch-action: none; user-select: none;
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.ocgo-fab:hover { transform: scale(1.04); border-color: rgba(255,255,255,.33); box-shadow: 0 8px 16px rgba(0,0,0,.4), 0 0 0 .5px rgba(255,255,255,.20); }
+.ocgo-fab.ocgo-open { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(118,152,253,.18), 0 8px 16px rgba(0,0,0,.4); }
+.ocgo-fab.ocgo-dragging { cursor: grabbing; transform: none; }
+.ocgo-fab svg { width: 32px; height: 32px; display: block; }
+.ocgo-panel {
+  position: fixed; right: 20px; bottom: 80px; z-index: 2147483646;
+  width: min(980px, calc(100vw - 32px)); height: min(760px, calc(100vh - 104px));
+  min-width: 680px; min-height: 480px; display: flex; flex-direction: column;
+  color: var(--fg); background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  box-shadow: var(--shadow-floating);
+}
+.ocgo-panel.ocgo-hidden, .ocgo-error.ocgo-hidden, .ocgo-chart-tooltip.ocgo-hidden { display: none; }
+.ocgo-header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: grab; background: #161616; user-select: none; }
+.ocgo-header:active { cursor: grabbing; }
+.ocgo-brand { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ocgo-title { font-size: 13px; font-weight: 720; letter-spacing: .15px; }
+.ocgo-subtitle { color: var(--faint); font-size: 10px; letter-spacing: .35px; text-transform: uppercase; }
+.ocgo-workspace { color: var(--muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line-soft); border-radius: 999px; background: rgba(255,255,255,.025); }
+.ocgo-icon-btn, .ocgo-btn, .ocgo-tab, .ocgo-sync-btn, .ocgo-danger-btn {
+  border: 1px solid var(--line); background: rgba(255,255,255,.045); color: var(--fg); border-radius: 7px; cursor: pointer;
+}
+.ocgo-icon-btn { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; color: var(--muted); }
+.ocgo-icon-btn:hover, .ocgo-btn:hover, .ocgo-tab:hover { background: rgba(255,255,255,.09); color: #fff; }
+.ocgo-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line-soft); background: #161616; }
+.ocgo-toolbar label { display: flex; align-items: center; gap: 4px; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .35px; }
+select, input[type="datetime-local"] {
+  background: #080808; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 7px; outline: none; max-width: 190px;
+}
+select:focus, input:focus { border-color: rgba(118,152,253,.75); }
+.ocgo-sync-btn { padding: 5px 10px; background: #fafafa; color: #161616; border-color: #fafafa; font-weight: 650; }
+.ocgo-sync-btn:hover { background: #ffffff; }
+.ocgo-sync-btn:disabled { opacity: .55; cursor: wait; }
+.ocgo-sync-btn.ocgo-stop { background: var(--yellow); border-color: var(--yellow); }
+.ocgo-btn { padding: 5px 9px; }
+.ocgo-danger-btn { padding: 5px 9px; border-color: rgba(241,116,113,.45); color: #f29b96; background: rgba(241,116,113,.08); }
+.ocgo-danger-btn.ocgo-confirm { background: #f17471; color: #161616; font-weight: 700; }
+.ocgo-custom-range { display: none; align-items: center; gap: 6px; }
+.ocgo-custom-range.ocgo-show { display: flex; }
+.ocgo-tabs { display: flex; padding: 0 12px; border-bottom: 1px solid var(--line); background: #161616; }
+.ocgo-tab { flex: 1; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 4px; color: var(--muted); }
+.ocgo-tab.ocgo-active { color: #fafafa; border-bottom-color: #fafafa; }
+.ocgo-statusbar { min-height: 29px; display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 11px; }
+.ocgo-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.ocgo-status-dot.ok { background: var(--green); box-shadow: 0 0 8px rgba(107,213,134,.55); }
+.ocgo-status-dot.busy { background: var(--yellow); animation: ocgoPulse 1s ease-in-out infinite; }
+.ocgo-status-dot.err { background: var(--danger); }
+@keyframes ocgoPulse { 50% { opacity: .35; } }
+.ocgo-body { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.ocgo-view { display: none; flex-direction: column; gap: 12px; }
+.ocgo-view.ocgo-active { display: flex; }
+.ocgo-error { margin: 8px 12px 0; border: 1px solid rgba(241,116,113,.35); background: rgba(241,116,113,.08); color: #f29b96; border-radius: 8px; padding: 7px 9px; }
+.ocgo-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ocgo-card { border: 1px solid var(--line-soft); background: var(--surface); border-radius: 8px; padding: 10px 11px; min-width: 0; box-shadow: 0 0 0 .5px rgba(255,255,255,.08) inset; }
+.ocgo-card-label { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .45px; }
+.ocgo-card-value { margin-top: 3px; font: 600 17px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ocgo-card-sub { margin-top: 3px; color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ocgo-card.accent .ocgo-card-value { color: var(--green); }
+.ocgo-card.blue .ocgo-card-value { color: var(--blue); }
+.ocgo-card.violet .ocgo-card-value { color: var(--violet); }
+.ocgo-section { border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface); padding: 10px; box-shadow: var(--shadow-raised); }
+.ocgo-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ocgo-section-title { font-size: 12px; font-weight: 680; color: var(--fg); }
+.ocgo-section-note { color: var(--faint); font-size: 10px; }
+.ocgo-chart-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.ocgo-chart-zoom-label { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .35px; }
+.ocgo-chart-zoom { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: #161616; }
+.ocgo-zoom-btn, .ocgo-zoom-value { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 3px 8px; min-width: 28px; }
+.ocgo-zoom-btn:hover, .ocgo-zoom-value:hover { background: rgba(255,255,255,.08); color: var(--fg); }
+.ocgo-zoom-btn:disabled { opacity: .35; cursor: default; }
+.ocgo-zoom-value { min-width: 52px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ocgo-chart-grid.ocgo-chart-zoomed { grid-template-columns: 1fr; }
+.ocgo-chart-box { min-height: var(--ocgo-chart-box-height, 250px); display: flex; flex-direction: column; }
+.ocgo-chart-host { flex: 0 0 auto; display: flex; flex-direction: column; overflow: visible; }
+.ocgo-chart-svg { width: var(--ocgo-chart-width, 100%); height: var(--ocgo-chart-height, 195px); overflow: visible; flex: 0 0 auto; }
+.ocgo-chart-title-group { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; min-width: 0; }
+.ocgo-section-average { color: var(--faint); font-size: 10px; font-weight: 400; }
+.ocgo-grid-line { stroke: rgba(255,255,255,.07); stroke-width: 1; }
+.ocgo-grid-line-v { stroke-dasharray: 3 5; }
+.ocgo-axis-label { fill: var(--faint); font-size: 9px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-point { cursor: default; }
+.ocgo-bar { opacity: .92; }
+.ocgo-hover-band { fill: rgba(255,255,255,.055); pointer-events: none; }
+.ocgo-hover-target { fill: transparent; pointer-events: all; }
+.ocgo-hover-target:focus { outline: none; }
+.ocgo-legend { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 9px; padding: 0 6px; }
+.ocgo-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.ocgo-legend i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+.ocgo-chart-empty { flex: 1; display: grid; place-items: center; color: var(--faint); min-height: 170px; text-align: center; }
+.ocgo-table-wrap { overflow: auto; border: 1px solid var(--line-soft); border-radius: 9px; max-height: 420px; }
+.ocgo-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+.ocgo-table th, .ocgo-table td { padding: 6px 7px; border-bottom: 1px solid var(--line-soft); text-align: right; white-space: nowrap; }
+.ocgo-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .35px; }
+.ocgo-table td { color: #dbdbdb; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-table th:first-child, .ocgo-table td:first-child, .ocgo-table th.left, .ocgo-table td.left { text-align: left; font-family: inherit; }
+.ocgo-table tr:last-child td { border-bottom: 0; }
+.ocgo-table tbody tr:hover td { background: rgba(255,255,255,.025); }
+.ocgo-table a { color: var(--accent); text-decoration: none; }
+.ocgo-table a:hover { text-decoration: underline; }
+.ocgo-muted { color: var(--muted); }
+.ocgo-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 999px; font: 600 9px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid var(--line); }
+.ocgo-pill.succeeded { color: #b8e9c1; border-color: rgba(107,213,134,.28); background: rgba(107,213,134,.07); }
+.ocgo-pill.failed, .ocgo-pill.rejected { color: #f29b96; border-color: rgba(241,116,113,.28); background: rgba(241,116,113,.07); }
+.ocgo-pill.cancelled { color: #f2cf76; border-color: rgba(242,207,118,.28); background: rgba(242,207,118,.07); }
+.ocgo-pill.legacy { color: var(--muted); border-color: var(--line); background: rgba(255,255,255,.04); }
+.ocgo-empty { border: 1px dashed var(--line); border-radius: 10px; padding: 34px 16px; text-align: center; color: var(--muted); }
+.ocgo-empty strong { display: block; color: var(--fg); margin-bottom: 4px; }
+.ocgo-toolbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ocgo-pager { display: flex; align-items: center; justify-content: flex-end; gap: 6px; color: var(--muted); font-size: 10px; }
+.ocgo-data-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ocgo-kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 10px; font-size: 11px; }
+.ocgo-kv dt { color: var(--faint); }
+.ocgo-kv dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+.ocgo-note { color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.ocgo-warning { border: 1px solid rgba(242,207,118,.35); background: rgba(242,207,118,.07); color: #f2cf76; border-radius: 8px; padding: 7px 9px; font-size: 10.5px; }
+.ocgo-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ocgo-pricing-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; color: var(--faint); font-size: 10px; }
+.ocgo-pricing-meta a { color: var(--accent); text-decoration: none; }
+.ocgo-pricing-meta a:hover { text-decoration: underline; }
+.ocgo-pricing-table-wrap { max-height: 260px; }
+.ocgo-price-period { display: inline-flex; align-items: center; padding: 1px 6px; border: 1px solid var(--line); border-radius: 999px; font: 600 9px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-price-period.peak { color: #f2cf76; border-color: rgba(242,207,118,.28); background: rgba(242,207,118,.07); }
+.ocgo-price-period.off-peak { color: #b8e9c1; border-color: rgba(107,213,134,.28); background: rgba(107,213,134,.07); }
+.ocgo-price-period.all { color: var(--muted); background: rgba(255,255,255,.04); }
+.ocgo-log-list { max-height: 190px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 8px; padding: 6px; background: #080808; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-log-row { display: grid; grid-template-columns: 54px 44px minmax(0, 1fr); gap: 6px; padding: 1px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.ocgo-log-row:last-child { border-bottom: 0; }
+.ocgo-log-time { color: var(--faint); }
+.ocgo-log-level { color: var(--muted); text-transform: uppercase; }
+.ocgo-log-level.error { color: var(--danger); }
+.ocgo-log-level.warn { color: var(--yellow); }
+.ocgo-log-msg { color: #dbdbdb; overflow-wrap: anywhere; }
+.ocgo-resize-handle { position: absolute; z-index: 5; touch-action: none; }
+.ocgo-resize-n, .ocgo-resize-s { left: 10px; right: 10px; height: 8px; }
+.ocgo-resize-e, .ocgo-resize-w { top: 10px; bottom: 10px; width: 8px; }
+.ocgo-resize-n { top: 0; cursor: n-resize; }
+.ocgo-resize-s { bottom: 0; cursor: s-resize; }
+.ocgo-resize-e { right: 0; cursor: e-resize; }
+.ocgo-resize-w { left: 0; cursor: w-resize; }
+.ocgo-resize-ne, .ocgo-resize-nw, .ocgo-resize-se, .ocgo-resize-sw { width: 14px; height: 14px; }
+.ocgo-resize-ne { top: 0; right: 0; cursor: ne-resize; }
+.ocgo-resize-nw { top: 0; left: 0; cursor: nw-resize; }
+.ocgo-resize-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.ocgo-resize-se::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); }
+.ocgo-resize-sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.ocgo-chart-tooltip {
+  position: fixed; z-index: 2147483647; width: 296px; max-width: calc(100vw - 32px);
+  pointer-events: none; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--surface); color: var(--fg); padding: 9px 10px;
+  box-shadow: var(--shadow-floating);
+  font-size: 10px; line-height: 1.45;
+}
+.ocgo-tooltip-head { color: #fafafa; font-weight: 650; padding-bottom: 5px; margin-bottom: 5px; border-bottom: 1px solid var(--line-soft); }
+.ocgo-tooltip-grid { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 2px 8px; margin: 0; }
+.ocgo-tooltip-grid dt { color: var(--faint); }
+.ocgo-tooltip-grid dd { margin: 0; color: #dbdbdb; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-tooltip-note { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line-soft); color: var(--faint); line-height: 1.4; }
+.ocgo-toast {
+  position: absolute; left: 50%; top: 10px; z-index: 8; width: max-content; max-width: min(280px, calc(100% - 36px));
+  padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 10px;
+  background: var(--surface); color: var(--fg); box-shadow: var(--shadow-floating);
+  font-size: 10.5px; line-height: 1.4; text-align: center; pointer-events: none;
+  transform: translateX(-50%);
+}
+.ocgo-toast.ocgo-hidden { display: none; }
+.ocgo-toast.ocgo-toast-in { animation: ocgoToastDrop .22s cubic-bezier(.2,.8,.2,1); }
+@keyframes ocgoToastDrop {
+  from { opacity: 0; transform: translate(-50%, -10px) scale(.98); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+.ocgo-metric-hover { cursor: help; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.ocgo-metric-hover:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.ocgo-body, .ocgo-table-wrap, .ocgo-log-list, .ocgo-chart-host {
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.ocgo-body::-webkit-scrollbar, .ocgo-table-wrap::-webkit-scrollbar, .ocgo-log-list::-webkit-scrollbar, .ocgo-chart-host::-webkit-scrollbar {
+  width: 8px; height: 8px;
+}
+.ocgo-body::-webkit-scrollbar-track, .ocgo-table-wrap::-webkit-scrollbar-track, .ocgo-log-list::-webkit-scrollbar-track, .ocgo-chart-host::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ocgo-body::-webkit-scrollbar-thumb, .ocgo-table-wrap::-webkit-scrollbar-thumb, .ocgo-log-list::-webkit-scrollbar-thumb, .ocgo-chart-host::-webkit-scrollbar-thumb {
+  background: #5c5c5c; border: 2px solid transparent; border-radius: 999px; background-clip: padding-box;
+}
+.ocgo-body::-webkit-scrollbar-thumb:hover, .ocgo-table-wrap::-webkit-scrollbar-thumb:hover, .ocgo-log-list::-webkit-scrollbar-thumb:hover, .ocgo-chart-host::-webkit-scrollbar-thumb:hover {
+  background: #808080; border: 2px solid transparent; border-radius: 999px; background-clip: padding-box;
+}
+.ocgo-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@media (max-width: 820px) {
+  .ocgo-panel { left: 8px !important; right: 8px !important; top: 8px !important; bottom: 8px !important; width: auto !important; height: auto !important; min-width: 0; min-height: 0; }
+  .ocgo-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ocgo-chart-grid, .ocgo-data-grid { grid-template-columns: 1fr; }
+  .ocgo-resize-handle { display: none; }
+  .ocgo-workspace { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ocgo-status-dot.busy { animation: none; }
+  .ocgo-fab { transition: none; }
+}
+`;
+
+  // src/ui/panel.ts
+  function node(tag, className = "", text2 = "") {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text2) element.textContent = text2;
+    return element;
+  }
+  function button(text2, className = "ocgo-btn") {
+    const element = node("button", className, text2);
+    element.type = "button";
+    return element;
+  }
+  function loadJSON(key, fallback) {
+    try {
+      const raw = localStorage.getItem(`${STORAGE_PREFIX}${key}`);
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
     }
   }
-
-  function downloadText(filename, text) {
-    const blob = new Blob([text], { type: "application/octet-stream" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  function saveJSON(key, value) {
+    try {
+      localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(value));
+    } catch {
+    }
   }
-  function downloadJson(name, obj) { downloadText(name + "-" + Date.now() + ".json", safeJson(obj)); }
-
-  function copyLogs() {
-    const text = logBuffer.map((e) => "[" + e.t + "][" + e.level + "][" + e.cat + "] " + e.msg + (e.data && e.data !== "null" ? " " + e.data : "")).join("\n");
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => info("log", t("log.copied")),
-        () => fallbackCopy(text)
+  function localInputValue(timestamp) {
+    const date = new Date(timestamp);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  function shortID(value) {
+    if (!value) return "—";
+    return value.length <= 22 ? value : `${value.slice(0, 10)}…${value.slice(-6)}`;
+  }
+  var RANGE_PRESETS = ["1h", "24h", "7d", "30d", "all", "custom"];
+  var MIN_PANEL_WIDTH = 680;
+  var MIN_PANEL_HEIGHT = 480;
+  var MIN_CHART_SCALE = 0.5;
+  var MAX_CHART_SCALE = 2;
+  var CHART_SCALE_STEP = 0.25;
+  var Panel = class {
+    logger;
+    host;
+    shadow;
+    panel;
+    fab;
+    errorBox;
+    statusDot;
+    statusText;
+    workspaceLabel;
+    rangeSelect;
+    modelSelect;
+    providerSelect;
+    userSelect;
+    customRange;
+    customFrom;
+    customTo;
+    syncButton;
+    langSelect;
+    cards;
+    overviewModels;
+    overviewLegacyNote;
+    charts = [];
+    chartModels;
+    chartGrid;
+    chartZoomValue;
+    chartZoomOut;
+    chartZoomIn;
+    chartTooltip;
+    toast;
+    toastTimer;
+    chartAverages = /* @__PURE__ */ new Map();
+    requestsTable;
+    requestPager;
+    dataInfo;
+    dataActions;
+    pricingPanel;
+    storageNote;
+    logList;
+    tabButtons = /* @__PURE__ */ new Map();
+    views = /* @__PURE__ */ new Map();
+    i18nNodes = /* @__PURE__ */ new Map();
+    language;
+    rangePreset;
+    filters;
+    activeTab;
+    persisted;
+    open = false;
+    workspaceID = null;
+    workspaces = [];
+    principals = [];
+    records = [];
+    totalRecordCount = 0;
+    rangeLoadSeq = 0;
+    syncState;
+    analysis;
+    range;
+    busy = false;
+    syncPromise;
+    controller;
+    principalsController;
+    progress;
+    errorMessage = "";
+    rangeError = "";
+    requestPage = 1;
+    clearArmed = false;
+    clearTimer;
+    refreshTimer;
+    autoInterval;
+    hasOpened = false;
+    mounted = false;
+    suppressFabClick = false;
+    chartScale = 1;
+    pricing;
+    pricingLoading = false;
+    pricingError = "";
+    constructor(logger2) {
+      this.logger = logger2;
+      this.language = loadJSON(LANGUAGE_STORAGE_KEY, detectLanguage());
+      this.rangePreset = loadJSON(RANGE_STORAGE_KEY, "7d");
+      this.activeTab = loadJSON(TAB_STORAGE_KEY, "overview");
+      this.filters = loadJSON(FILTERS_STORAGE_KEY, { model: "", provider: "", userKey: "" });
+      this.persisted = loadJSON(PANEL_STATE_KEY, {});
+      if (typeof this.persisted.chartScale === "number" && Number.isFinite(this.persisted.chartScale)) {
+        this.chartScale = clamp(this.persisted.chartScale, MIN_CHART_SCALE, MAX_CHART_SCALE);
+      }
+      this.open = Boolean(this.persisted.open);
+    }
+    mount() {
+      if (this.mounted || document.getElementById("ocgo-lens-host")) return;
+      this.mounted = true;
+      this.host = node("div");
+      this.host.id = "ocgo-lens-host";
+      this.shadow = this.host.attachShadow({ mode: "open" });
+      const style = node("style");
+      style.textContent = panelCss;
+      this.shadow.appendChild(style);
+      this.buildShell(this.shadow);
+      document.documentElement.appendChild(this.host);
+      this.applyGeometry();
+      this.setOpen(this.open, false);
+      this.renderChrome();
+      this.render();
+      this.applyFabGeometry();
+      this.applyChartScale();
+      this.startAutoSync();
+      window.addEventListener("resize", () => {
+        this.applyGeometry();
+        this.applyFabGeometry();
+      });
+      this.logger.info("log.mounted");
+      this.logger.subscribe(() => {
+        if (this.activeTab === "data") this.renderLogs();
+      });
+    }
+    rememberI18n(key, element) {
+      const nodes = this.i18nNodes.get(key) ?? [];
+      nodes.push(element);
+      this.i18nNodes.set(key, nodes);
+      return element;
+    }
+    textFor(key) {
+      const element = node("span");
+      this.rememberI18n(key, element);
+      return element;
+    }
+    buildShell(root) {
+      const wrapper = node("div");
+      wrapper.id = "ocgo-lens";
+      this.fab = button("", "ocgo-fab");
+      this.fab.setAttribute("aria-label", "Open performance lens");
+      this.fab.setAttribute("aria-expanded", "false");
+      this.fab.setAttribute("aria-controls", "ocgo-lens-panel");
+      this.fab.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 23V9m6 14V13m6 10V7m6 16V11" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M4 27h24" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1.4"/></svg>';
+      this.fab.addEventListener("click", () => {
+        if (this.suppressFabClick) {
+          this.suppressFabClick = false;
+          return;
+        }
+        this.setOpen(!this.open);
+      });
+      this.bindFabDrag();
+      const panel2 = node("section", "ocgo-panel ocgo-hidden");
+      panel2.id = "ocgo-lens-panel";
+      this.panel = panel2;
+      panel2.setAttribute("role", "dialog");
+      panel2.setAttribute("aria-modal", "false");
+      panel2.setAttribute("aria-labelledby", "ocgo-lens-title");
+      const header = node("header", "ocgo-header");
+      const brand = node("div", "ocgo-brand");
+      const title = this.rememberI18n("app.title", node("div", "ocgo-title"));
+      title.id = "ocgo-lens-title";
+      brand.append(title, this.rememberI18n("app.subtitle", node("div", "ocgo-subtitle")));
+      this.workspaceLabel = node("span", "ocgo-workspace");
+      const langSelect = node("select");
+      this.langSelect = langSelect;
+      langSelect.setAttribute("aria-label", "Language");
+      for (const [value, label] of [["zh", "中文"], ["en", "English"]]) {
+        const option = node("option", "", label);
+        option.value = value;
+        langSelect.appendChild(option);
+      }
+      langSelect.addEventListener("change", () => this.setLanguage(langSelect.value));
+      const close = button("×", "ocgo-icon-btn");
+      close.setAttribute("aria-label", "Close");
+      close.addEventListener("click", () => this.setOpen(false));
+      header.append(brand, this.workspaceLabel, langSelect, close);
+      this.bindDrag(header);
+      const toolbar = node("div", "ocgo-toolbar");
+      const rangeWrap = node("label");
+      rangeWrap.append(this.textFor("range.label"));
+      const rangeSelect = node("select");
+      this.rangeSelect = rangeSelect;
+      for (const preset of RANGE_PRESETS) {
+        const option = node("option");
+        option.value = preset;
+        this.rememberI18n(`range.${preset}`, option);
+        rangeSelect.appendChild(option);
+      }
+      rangeWrap.append(rangeSelect);
+      const custom = node("div", "ocgo-custom-range");
+      this.customRange = custom;
+      const fromInput = node("input");
+      fromInput.type = "datetime-local";
+      const toInput = node("input");
+      toInput.type = "datetime-local";
+      fromInput.value = this.persisted.customFrom ?? "";
+      toInput.value = this.persisted.customTo ?? "";
+      this.customFrom = fromInput;
+      this.customTo = toInput;
+      custom.append(this.textFor("range.from"), fromInput, this.textFor("range.to"), toInput);
+      const modelLabel = node("label");
+      modelLabel.append(this.textFor("filter.model"));
+      const modelSelect = node("select");
+      this.modelSelect = modelSelect;
+      modelLabel.append(modelSelect);
+      const providerLabel = node("label");
+      providerLabel.append(this.textFor("filter.provider"));
+      const providerSelect = node("select");
+      this.providerSelect = providerSelect;
+      providerLabel.append(providerSelect);
+      const userLabel = node("label");
+      userLabel.append(this.textFor("filter.user"));
+      const userSelect = node("select");
+      this.userSelect = userSelect;
+      userLabel.append(userSelect);
+      const clearFilters = button("", "ocgo-btn");
+      this.rememberI18n("filter.clear", clearFilters);
+      clearFilters.addEventListener("click", () => {
+        this.filters = { model: "", provider: "", userKey: "" };
+        this.requestPage = 1;
+        this.persistPreferences();
+        this.renderFilters();
+        this.render();
+      });
+      const sync = button("", "ocgo-sync-btn");
+      this.syncButton = sync;
+      sync.addEventListener("click", () => {
+        if (this.busy) this.stopSync();
+        else void this.sync(false);
+      });
+      toolbar.append(rangeWrap, custom, modelLabel, providerLabel, userLabel, clearFilters, sync);
+      rangeSelect.addEventListener("change", () => {
+        this.rangePreset = rangeSelect.value;
+        if (this.rangePreset === "custom") this.ensureCustomRange();
+        this.requestPage = 1;
+        this.persistPreferences();
+        void this.reloadRecords();
+      });
+      fromInput.addEventListener("change", () => {
+        this.persisted.customFrom = fromInput.value;
+        saveJSON(PANEL_STATE_KEY, this.persisted);
+        this.requestPage = 1;
+        void this.reloadRecords();
+      });
+      toInput.addEventListener("change", () => {
+        this.persisted.customTo = toInput.value;
+        saveJSON(PANEL_STATE_KEY, this.persisted);
+        this.requestPage = 1;
+        void this.reloadRecords();
+      });
+      modelSelect.addEventListener("change", () => {
+        this.filters.model = modelSelect.value;
+        this.requestPage = 1;
+        this.persistPreferences();
+        this.render();
+      });
+      providerSelect.addEventListener("change", () => {
+        this.filters.provider = providerSelect.value;
+        this.requestPage = 1;
+        this.persistPreferences();
+        this.render();
+      });
+      userSelect.addEventListener("change", () => {
+        this.filters.userKey = userSelect.value;
+        this.requestPage = 1;
+        this.persistPreferences();
+        this.render();
+      });
+      const tabs = node("nav", "ocgo-tabs");
+      const tabKeys = ["overview", "charts", "requests", "data"];
+      for (const key of tabKeys) {
+        const tab = button("", "ocgo-tab");
+        this.rememberI18n(`tabs.${key}`, tab);
+        tab.dataset.tab = key;
+        tab.addEventListener("click", () => this.setTab(key));
+        this.tabButtons.set(key, tab);
+        tabs.appendChild(tab);
+      }
+      const status = node("div", "ocgo-statusbar");
+      this.statusDot = node("span", "ocgo-status-dot");
+      this.statusText = node("span");
+      status.append(this.statusDot, this.statusText);
+      this.errorBox = node("div", "ocgo-error ocgo-hidden");
+      const body = node("div", "ocgo-body");
+      const overview = this.buildOverviewView();
+      const charts = this.buildChartsView();
+      const requests = this.buildRequestsView();
+      const data = this.buildDataView();
+      this.views.set("overview", overview);
+      this.views.set("charts", charts);
+      this.views.set("requests", requests);
+      this.views.set("data", data);
+      body.append(overview, charts, requests, data);
+      const directions = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
+      const handles = directions.map((direction) => {
+        const handle = node("div", `ocgo-resize-handle ocgo-resize-${direction}`);
+        handle.dataset.resize = direction;
+        handle.setAttribute("aria-hidden", "true");
+        this.bindResize(handle, direction);
+        return handle;
+      });
+      panel2.append(header, toolbar, tabs, status, this.errorBox, body, ...handles);
+      this.chartTooltip = node("div", "ocgo-chart-tooltip ocgo-hidden");
+      this.chartTooltip.setAttribute("role", "tooltip");
+      this.toast = node("div", "ocgo-toast ocgo-hidden");
+      this.toast.setAttribute("role", "status");
+      this.toast.setAttribute("aria-live", "polite");
+      panel2.appendChild(this.toast);
+      wrapper.append(this.fab, panel2, this.chartTooltip);
+      root.appendChild(wrapper);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && this.open) this.setOpen(false);
+      });
+      document.addEventListener("pointerdown", (event) => {
+        if (!this.open) return;
+        const path = event.composedPath();
+        if (this.panel && path.includes(this.panel)) return;
+        if (this.fab && path.includes(this.fab)) return;
+        if (this.chartTooltip && path.includes(this.chartTooltip)) return;
+        this.setOpen(false);
+      }, true);
+      document.addEventListener("visibilitychange", () => this.handleVisibility());
+    }
+    buildOverviewView() {
+      const view = node("section", "ocgo-view");
+      view.dataset.view = "overview";
+      this.cards = node("div", "ocgo-cards");
+      const section = node("section", "ocgo-section");
+      const head = node("div", "ocgo-section-head");
+      const legacyNote = this.textFor("legacy.note");
+      this.overviewLegacyNote = legacyNote;
+      head.append(this.textFor("chart.models"), legacyNote);
+      this.overviewModels = node("div", "ocgo-table-wrap");
+      section.append(head, this.overviewModels);
+      view.append(this.cards, section);
+      return view;
+    }
+    buildChartsView() {
+      const view = node("section", "ocgo-view");
+      view.dataset.view = "charts";
+      const controls = node("div", "ocgo-chart-controls");
+      const zoomLabel = this.textFor("chart.zoom");
+      zoomLabel.className = "ocgo-chart-zoom-label";
+      const zoomGroup = node("div", "ocgo-chart-zoom");
+      const zoomOut = button("−", "ocgo-zoom-btn");
+      this.chartZoomOut = zoomOut;
+      zoomOut.setAttribute("aria-label", t(this.language, "chart.zoomOut"));
+      zoomOut.addEventListener("click", () => this.setChartScale(this.chartScale - CHART_SCALE_STEP));
+      const zoomValue = button("100%", "ocgo-zoom-value");
+      zoomValue.setAttribute("aria-label", t(this.language, "chart.zoomReset"));
+      zoomValue.addEventListener("click", () => this.setChartScale(1));
+      this.chartZoomValue = zoomValue;
+      const zoomIn = button("+", "ocgo-zoom-btn");
+      this.chartZoomIn = zoomIn;
+      zoomIn.setAttribute("aria-label", t(this.language, "chart.zoomIn"));
+      zoomIn.addEventListener("click", () => this.setChartScale(this.chartScale + CHART_SCALE_STEP));
+      zoomGroup.append(zoomOut, zoomValue, zoomIn);
+      controls.append(zoomLabel, zoomGroup);
+      const grid = node("div", "ocgo-chart-grid");
+      this.chartGrid = grid;
+      const keys = ["chart.tokens", "chart.cache", "chart.ttft", "chart.tps"];
+      for (const key of keys) {
+        const section = node("section", "ocgo-section ocgo-chart-box");
+        const head2 = node("div", "ocgo-section-head");
+        const titleGroup = node("div", "ocgo-chart-title-group");
+        const title = this.textFor(key);
+        title.className = "ocgo-section-title";
+        const average = node("span", "ocgo-section-average");
+        this.chartAverages.set(key, average);
+        titleGroup.append(title, average);
+        head2.append(titleGroup);
+        const host = node("div", "ocgo-chart-host");
+        this.charts.push(host);
+        section.append(head2, host);
+        grid.appendChild(section);
+      }
+      const modelSection = node("section", "ocgo-section");
+      const head = node("div", "ocgo-section-head");
+      head.append(this.textFor("chart.models"));
+      this.chartModels = node("div", "ocgo-table-wrap");
+      modelSection.append(head, this.chartModels);
+      view.append(controls, grid, modelSection);
+      return view;
+    }
+    buildRequestsView() {
+      const view = node("section", "ocgo-view");
+      view.dataset.view = "requests";
+      const section = node("section", "ocgo-section");
+      this.requestsTable = node("div", "ocgo-table-wrap");
+      this.requestPager = node("div", "ocgo-pager");
+      section.append(this.requestsTable, this.requestPager);
+      view.append(section);
+      return view;
+    }
+    buildDataView() {
+      const view = node("section", "ocgo-view");
+      view.dataset.view = "data";
+      const grid = node("div", "ocgo-data-grid");
+      const infoSection = node("section", "ocgo-section");
+      const infoHead = node("div", "ocgo-section-head");
+      infoHead.append(this.textFor("tabs.data"));
+      this.dataInfo = node("div");
+      infoSection.append(infoHead, this.dataInfo);
+      const actionSection = node("section", "ocgo-section");
+      const actionHead = node("div", "ocgo-section-head");
+      actionHead.append(this.textFor("data.actions"));
+      this.dataActions = node("div", "ocgo-actions");
+      actionSection.append(actionHead, this.dataActions);
+      grid.append(infoSection, actionSection);
+      const pricingSection = node("section", "ocgo-section ocgo-pricing-section");
+      const pricingHead = node("div", "ocgo-section-head");
+      pricingHead.append(
+        this.textFor("data.pricingTitle"),
+        this.rememberI18n("data.pricingHint", node("span", "ocgo-section-note"))
       );
-    } else fallbackCopy(text);
+      this.pricingPanel = node("div", "ocgo-pricing-panel");
+      pricingSection.append(pricingHead, this.pricingPanel);
+      const diagnostics = node("section", "ocgo-section");
+      const logHead = node("div", "ocgo-section-head");
+      logHead.append(this.textFor("data.diagnostics"));
+      this.logList = node("div", "ocgo-log-list");
+      diagnostics.append(logHead, this.logList);
+      view.append(grid, pricingSection, diagnostics);
+      return view;
+    }
+    bindDrag(header) {
+      header.addEventListener("mousedown", (event) => {
+        const target = event.target;
+        if (target.closest("button, select, input, a")) return;
+        if (!this.panel) return;
+        event.preventDefault();
+        const rect = this.panel.getBoundingClientRect();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startLeft = rect.left;
+        const startTop = rect.top;
+        const move = (moveEvent) => {
+          if (!this.panel) return;
+          const left = Math.max(0, Math.min(window.innerWidth - 120, startLeft + moveEvent.clientX - startX));
+          const top = Math.max(0, Math.min(window.innerHeight - 80, startTop + moveEvent.clientY - startY));
+          this.panel.style.left = `${left}px`;
+          this.panel.style.top = `${top}px`;
+          this.panel.style.right = "auto";
+          this.panel.style.bottom = "auto";
+        };
+        const up = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+          if (this.panel) {
+            const next = this.panel.getBoundingClientRect();
+            this.persisted.x = Math.round(next.left);
+            this.persisted.y = Math.round(next.top);
+            saveJSON(PANEL_STATE_KEY, this.persisted);
+          }
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+      });
+    }
+    bindFabDrag() {
+      if (!this.fab) return;
+      this.fab.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || !this.fab) return;
+        const fab = this.fab;
+        const rect = fab.getBoundingClientRect();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const pointerId = event.pointerId;
+        let moved = false;
+        let finished = false;
+        const move = (moveEvent) => {
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+          if (!moved && Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          moveEvent.preventDefault();
+          fab.classList.add("ocgo-dragging");
+          const size = fab.offsetWidth || 48;
+          const left = clamp(rect.left + dx, 8, window.innerWidth - size - 8);
+          const top = clamp(rect.top + dy, 8, window.innerHeight - size - 8);
+          fab.style.left = `${left}px`;
+          fab.style.top = `${top}px`;
+          fab.style.right = "auto";
+          fab.style.bottom = "auto";
+        };
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", finish);
+          window.removeEventListener("pointercancel", finish);
+          fab.removeEventListener("lostpointercapture", finish);
+          if (fab.hasPointerCapture(pointerId)) fab.releasePointerCapture(pointerId);
+          fab.classList.remove("ocgo-dragging");
+          if (!moved) return;
+          const next = fab.getBoundingClientRect();
+          this.persisted.fabX = Math.round(next.left);
+          this.persisted.fabY = Math.round(next.top);
+          saveJSON(PANEL_STATE_KEY, this.persisted);
+          this.suppressFabClick = true;
+          window.setTimeout(() => {
+            this.suppressFabClick = false;
+          }, 350);
+        };
+        try {
+          fab.setPointerCapture(pointerId);
+        } catch {
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", finish);
+        window.addEventListener("pointercancel", finish);
+        fab.addEventListener("lostpointercapture", finish);
+      });
+    }
+    bindResize(handle, direction) {
+      handle.addEventListener("pointerdown", (event) => {
+        if (!this.panel || event.button !== 0 || window.innerWidth <= 820) return;
+        event.preventDefault();
+        const panel2 = this.panel;
+        const rect = panel2.getBoundingClientRect();
+        panel2.style.left = `${rect.left}px`;
+        panel2.style.top = `${rect.top}px`;
+        panel2.style.width = `${rect.width}px`;
+        panel2.style.height = `${rect.height}px`;
+        panel2.style.right = "auto";
+        panel2.style.bottom = "auto";
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const pointerId = event.pointerId;
+        const startLeft = rect.left;
+        const startTop = rect.top;
+        const startRight = rect.right;
+        const startBottom = rect.bottom;
+        const minWidth = Math.min(MIN_PANEL_WIDTH, window.innerWidth - 16);
+        const minHeight = Math.min(MIN_PANEL_HEIGHT, window.innerHeight - 16);
+        const rightBound = window.innerWidth - 8;
+        const bottomBound = window.innerHeight - 8;
+        let finished = false;
+        const move = (moveEvent) => {
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+          let left = startLeft;
+          let top = startTop;
+          let width = rect.width;
+          let height = rect.height;
+          if (direction.includes("e")) {
+            width = clamp(startRight + dx - startLeft, minWidth, Math.max(minWidth, rightBound - startLeft));
+          }
+          if (direction.includes("w")) {
+            left = clamp(startLeft + dx, 8, Math.max(8, startRight - minWidth));
+            width = startRight - left;
+          }
+          if (direction.includes("s")) {
+            height = clamp(startBottom + dy - startTop, minHeight, Math.max(minHeight, bottomBound - startTop));
+          }
+          if (direction.includes("n")) {
+            top = clamp(startTop + dy, 8, Math.max(8, startBottom - minHeight));
+            height = startBottom - top;
+          }
+          panel2.style.left = `${left}px`;
+          panel2.style.top = `${top}px`;
+          panel2.style.width = `${width}px`;
+          panel2.style.height = `${height}px`;
+        };
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", finish);
+          window.removeEventListener("pointercancel", finish);
+          handle.removeEventListener("lostpointercapture", finish);
+          if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+          const next = panel2.getBoundingClientRect();
+          this.persisted.x = Math.round(next.left);
+          this.persisted.y = Math.round(next.top);
+          this.persisted.width = Math.round(next.width);
+          this.persisted.height = Math.round(next.height);
+          saveJSON(PANEL_STATE_KEY, this.persisted);
+        };
+        try {
+          handle.setPointerCapture(pointerId);
+        } catch {
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", finish);
+        window.addEventListener("pointercancel", finish);
+        handle.addEventListener("lostpointercapture", finish);
+      });
+    }
+    applyGeometry() {
+      if (!this.panel) return;
+      const maxWidth = Math.max(320, window.innerWidth - 16);
+      const maxHeight = Math.max(320, window.innerHeight - 16);
+      const width = this.persisted.width ? clamp(this.persisted.width, Math.min(MIN_PANEL_WIDTH, maxWidth), maxWidth) : void 0;
+      const height = this.persisted.height ? clamp(this.persisted.height, Math.min(MIN_PANEL_HEIGHT, maxHeight), maxHeight) : void 0;
+      if (width) this.panel.style.width = `${width}px`;
+      if (height) this.panel.style.height = `${height}px`;
+      if (this.persisted.x !== void 0 || this.persisted.y !== void 0) {
+        const rect = this.panel.getBoundingClientRect();
+        const left = clamp(this.persisted.x ?? rect.left, 8, Math.max(8, window.innerWidth - (width ?? rect.width) - 8));
+        const top = clamp(this.persisted.y ?? rect.top, 8, Math.max(8, window.innerHeight - (height ?? rect.height) - 8));
+        this.panel.style.left = `${left}px`;
+        this.panel.style.top = `${top}px`;
+        this.panel.style.right = "auto";
+        this.panel.style.bottom = "auto";
+      }
+    }
+    applyFabGeometry() {
+      if (!this.fab || this.persisted.fabX === void 0 && this.persisted.fabY === void 0) return;
+      const size = this.fab.offsetWidth || 48;
+      const defaultLeft = window.innerWidth - 20 - size;
+      const defaultTop = window.innerHeight - 20 - size;
+      const left = clamp(this.persisted.fabX ?? defaultLeft, 8, Math.max(8, window.innerWidth - size - 8));
+      const top = clamp(this.persisted.fabY ?? defaultTop, 8, Math.max(8, window.innerHeight - size - 8));
+      this.fab.style.left = `${left}px`;
+      this.fab.style.top = `${top}px`;
+      this.fab.style.right = "auto";
+      this.fab.style.bottom = "auto";
+    }
+    setChartScale(value) {
+      this.chartScale = clamp(Math.round(value / CHART_SCALE_STEP) * CHART_SCALE_STEP, MIN_CHART_SCALE, MAX_CHART_SCALE);
+      this.persisted.chartScale = this.chartScale;
+      saveJSON(PANEL_STATE_KEY, this.persisted);
+      this.applyChartScale();
+      hideChartTooltip(this.chartTooltip);
+    }
+    applyChartScale() {
+      if (!this.chartGrid) return;
+      this.chartGrid.style.setProperty("--ocgo-chart-width", this.chartScale <= 1 ? `${this.chartScale * 100}%` : "100%");
+      this.chartGrid.style.setProperty("--ocgo-chart-height", `${195 * this.chartScale}px`);
+      this.chartGrid.style.setProperty("--ocgo-chart-box-height", `${250 * this.chartScale}px`);
+      this.chartGrid.classList.toggle("ocgo-chart-zoomed", this.chartScale > 1);
+      if (this.chartZoomValue) this.chartZoomValue.textContent = `${Math.round(this.chartScale * 100)}%`;
+      if (this.chartZoomOut) this.chartZoomOut.disabled = this.chartScale <= MIN_CHART_SCALE;
+      if (this.chartZoomIn) this.chartZoomIn.disabled = this.chartScale >= MAX_CHART_SCALE;
+    }
+    setOpen(open, persist = true) {
+      this.open = open;
+      this.panel?.classList.toggle("ocgo-hidden", !open);
+      this.fab?.classList.toggle("ocgo-open", open);
+      this.fab?.setAttribute("aria-expanded", String(open));
+      if (this.fab) {
+        const label = t(this.language, open ? "app.close" : "app.open");
+        this.fab.title = label;
+        this.fab.setAttribute("aria-label", label);
+      }
+      if (persist) {
+        this.persisted.open = open;
+        saveJSON(PANEL_STATE_KEY, this.persisted);
+      }
+      if (!open) {
+        hideChartTooltip(this.chartTooltip);
+        this.hideToast();
+      }
+      if (open) {
+        this.hasOpened = true;
+        this.render();
+        window.setTimeout(() => this.autoSyncIfStale(), 150);
+      }
+    }
+    showToast(key, values) {
+      if (!this.toast || !this.open) return;
+      if (this.toastTimer) window.clearTimeout(this.toastTimer);
+      this.toast.textContent = t(this.language, key, values);
+      this.toast.classList.remove("ocgo-hidden", "ocgo-toast-in");
+      void this.toast.offsetWidth;
+      this.toast.classList.add("ocgo-toast-in");
+      this.toastTimer = window.setTimeout(() => this.hideToast(), 4e3);
+    }
+    hideToast() {
+      if (this.toastTimer) {
+        window.clearTimeout(this.toastTimer);
+        this.toastTimer = void 0;
+      }
+      this.toast?.classList.add("ocgo-hidden");
+    }
+    async ensurePricing() {
+      if (this.pricingLoading) return;
+      this.pricingLoading = true;
+      this.renderPricing();
+      const result = await loadGoPricing();
+      this.pricingLoading = false;
+      this.pricingError = result.error ?? "";
+      if (result.pricing) {
+        this.pricing = result.pricing;
+        if (result.refreshed) this.logger.info("log.pricingUpdated", { n: result.pricing.tiers.length });
+        this.renderModelTable(this.overviewModels, this.analysis?.models ?? []);
+        this.renderModelTable(this.chartModels, this.analysis?.models ?? []);
+      }
+      this.renderPricing();
+      if (result.error) this.logger.warn("log.pricingRefreshFailed", { error: result.error });
+    }
+    setTab(tab) {
+      this.activeTab = tab;
+      hideChartTooltip(this.chartTooltip);
+      saveJSON(TAB_STORAGE_KEY, tab);
+      for (const [key, tabButton] of this.tabButtons) tabButton.classList.toggle("ocgo-active", key === tab);
+      for (const [key, view] of this.views) view.classList.toggle("ocgo-active", key === tab);
+      if (tab === "data") this.renderData();
+      if (tab === "requests") this.renderRequests();
+    }
+    setLanguage(language) {
+      this.language = language;
+      saveJSON(LANGUAGE_STORAGE_KEY, language);
+      hideChartTooltip(this.chartTooltip);
+      this.renderChrome();
+      this.render();
+    }
+    persistPreferences() {
+      saveJSON(RANGE_STORAGE_KEY, this.rangePreset);
+      saveJSON(FILTERS_STORAGE_KEY, this.filters);
+      saveJSON(TAB_STORAGE_KEY, this.activeTab);
+      saveJSON(LANGUAGE_STORAGE_KEY, this.language);
+    }
+    ensureCustomRange() {
+      if (!this.customFrom || !this.customTo) return;
+      if (!this.customFrom.value) this.customFrom.value = localInputValue(Date.now() - RETENTION_DAYS * 864e5);
+      if (!this.customTo.value) this.customTo.value = localInputValue(Date.now());
+      this.persisted.customFrom = this.customFrom.value;
+      this.persisted.customTo = this.customTo.value;
+      saveJSON(PANEL_STATE_KEY, this.persisted);
+    }
+    customRangeError() {
+      if (this.rangePreset !== "custom") return "";
+      const fromValue = this.customFrom?.value?.trim() ?? "";
+      const toValue = this.customTo?.value?.trim() ?? "";
+      if (!fromValue || !toValue) return t(this.language, "data.customInvalid");
+      const from = new Date(fromValue).getTime();
+      const to = new Date(toValue).getTime();
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) {
+        return t(this.language, "data.customInvalid");
+      }
+      return "";
+    }
+    currentRange() {
+      if (this.rangePreset === "custom" && this.customFrom && this.customTo) {
+        return makeTimeRange(
+          "custom",
+          this.customFrom.value ? new Date(this.customFrom.value).getTime() : void 0,
+          this.customTo.value ? new Date(this.customTo.value).getTime() : void 0
+        );
+      }
+      return makeTimeRange(this.rangePreset);
+    }
+    renderChrome() {
+      if (!this.panel) return;
+      for (const [key, nodes] of this.i18nNodes) {
+        for (const element of nodes) element.textContent = t(this.language, key);
+      }
+      if (this.fab) {
+        const label = t(this.language, this.open ? "app.close" : "app.open");
+        this.fab.title = label;
+        this.fab.setAttribute("aria-label", label);
+        this.fab.setAttribute("aria-expanded", String(this.open));
+      }
+      this.chartZoomOut?.setAttribute("aria-label", t(this.language, "chart.zoomOut"));
+      this.chartZoomIn?.setAttribute("aria-label", t(this.language, "chart.zoomIn"));
+      this.chartZoomValue?.setAttribute("aria-label", t(this.language, "chart.zoomReset"));
+      if (this.langSelect) this.langSelect.value = this.language;
+      if (this.rangeSelect) this.rangeSelect.value = this.rangePreset;
+      if (this.syncButton) {
+        this.syncButton.textContent = this.busy ? t(this.language, "status.stop") : t(this.language, "status.syncNow");
+        this.syncButton.classList.toggle("ocgo-stop", this.busy);
+        this.syncButton.disabled = !this.workspaceID;
+      }
+      this.customRange?.classList.toggle("ocgo-show", this.rangePreset === "custom");
+      const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
+      if (this.workspaceLabel) {
+        this.workspaceLabel.textContent = workspace?.name || this.workspaceID || t(this.language, "error.workspace");
+        this.workspaceLabel.title = this.workspaceID || "";
+      }
+      this.setTab(this.activeTab);
+    }
+    renderFilters() {
+      const options = filterOptions(this.records);
+      this.fillSelect(this.modelSelect, options.models, this.filters.model, (value) => {
+        this.filters.model = value;
+      });
+      this.fillSelect(this.providerSelect, options.providers, this.filters.provider, (value) => {
+        this.filters.provider = value;
+      });
+      if (this.userSelect) {
+        this.userSelect.replaceChildren();
+        const all = node("option", "", t(this.language, "filter.all"));
+        all.value = "";
+        this.userSelect.appendChild(all);
+        for (const user of options.users) {
+          const rawID = user.key.replace(/^(account:|user:)/, "");
+          const principal = this.principals.find((item) => item.userId === rawID || item.serviceUserId === rawID);
+          const label = principal?.name || principal?.email || user.label;
+          const option = node("option", "", label);
+          option.value = user.key;
+          this.userSelect.appendChild(option);
+        }
+        this.userSelect.value = options.users.some((user) => user.key === this.filters.userKey) ? this.filters.userKey : "";
+        if (!this.userSelect.value) this.filters.userKey = "";
+      }
+    }
+    fillSelect(select, values, selected, setter) {
+      if (!select) return;
+      select.replaceChildren();
+      const all = node("option", "", t(this.language, "filter.all"));
+      all.value = "";
+      select.appendChild(all);
+      for (const value of values) {
+        const option = node("option", "", value || "—");
+        option.value = value;
+        select.appendChild(option);
+      }
+      select.value = values.includes(selected) ? selected : "";
+      if (!select.value) setter("");
+    }
+    render() {
+      if (!this.panel) return;
+      this.rangeError = this.customRangeError();
+      this.renderChrome();
+      this.renderFilters();
+      this.range = this.currentRange();
+      this.analysis = aggregateRecords(this.records, this.filters, this.range.from, this.range.to, this.range.bucketMs);
+      this.renderStatus();
+      this.renderError();
+      this.renderOverview();
+      this.renderCharts();
+      this.renderRequests();
+      if (this.activeTab === "data") this.renderData();
+    }
+    renderStatus() {
+      if (!this.statusDot || !this.statusText) return;
+      this.statusDot.className = "ocgo-status-dot";
+      if (this.rangeError) {
+        this.statusDot.classList.add("err");
+        this.statusText.textContent = this.rangeError;
+        return;
+      }
+      if (this.busy) {
+        this.statusDot.classList.add("busy");
+        this.statusText.textContent = this.progress ? t(this.language, "status.syncing", { page: this.progress.page, n: this.progress.fetched }) : t(this.language, "error.loading");
+        return;
+      }
+      if (this.errorMessage) {
+        this.statusDot.classList.add("err");
+        this.statusText.textContent = this.errorMessage;
+        return;
+      }
+      if (!this.workspaceID) {
+        this.statusText.textContent = t(this.language, "error.workspace");
+        return;
+      }
+      if (this.syncState?.lastSuccessfulSyncAt) this.statusDot.classList.add("ok");
+      const syncText = this.syncState?.lastSuccessfulSyncAt ? t(this.language, "status.lastSync", { time: formatRelative(this.syncState.lastSuccessfulSyncAt, Date.now(), this.language) }) : t(this.language, "status.never");
+      this.statusText.textContent = `${t(this.language, "status.records", { n: formatNumber(this.totalRecordCount) })} · ${syncText}`;
+    }
+    renderError() {
+      if (!this.errorBox) return;
+      const message = this.rangeError || this.errorMessage;
+      this.errorBox.classList.toggle("ocgo-hidden", !message);
+      this.errorBox.textContent = message;
+    }
+    renderOverview() {
+      if (!this.cards || !this.analysis) return;
+      const summary = this.analysis.summary;
+      this.cards.replaceChildren();
+      const card = (label, value, sub, tone = "") => {
+        const element = node("div", `ocgo-card ${tone}`.trim());
+        element.append(node("div", "ocgo-card-label", label), node("div", "ocgo-card-value", value));
+        if (sub) element.appendChild(node("div", "ocgo-card-sub", sub));
+        return element;
+      };
+      const success = formatPercent(summary.successRate);
+      const failures = t(this.language, "metric.failures", { n: summary.failed });
+      const tpsValue = summary.tpsAvg === null || summary.tpsSlowest === null ? "N/A" : `${summary.tpsAvg.toFixed(1)} / ${summary.tpsSlowest.toFixed(1)} tok/s`;
+      const cards = [
+        card(t(this.language, "metric.requests"), formatNumber(summary.requests), `${t(this.language, "metric.successRate")} ${success} · ${failures}`),
+        card(t(this.language, "metric.cost"), formatUsd(summary.costUsd), summary.requests ? `≈ ${formatUsd(summary.costUsd / summary.requests)} / request` : "—"),
+        card(t(this.language, "metric.input"), formatCompact(summary.inputTokens), void 0, "blue"),
+        card(t(this.language, "metric.output"), formatCompact(summary.outputTokens)),
+        card(t(this.language, "metric.ttft"), `${formatMs(summary.ttftAvg)} / ${formatMs(summary.ttftSlowest)}`, t(this.language, "metric.samples", { n: summary.ttftSamples }), "blue"),
+        card(t(this.language, "metric.tps"), tpsValue, t(this.language, "metric.samples", { n: summary.tpsSamples }), "violet")
+      ];
+      if (summary.cacheWriteTokens > 0) {
+        cards.push(card(t(this.language, "metric.cacheWrite"), formatCompact(summary.cacheWriteTokens)));
+      }
+      cards.push(
+        card(t(this.language, "metric.cacheRead"), formatCompact(summary.cacheReadTokens)),
+        card(t(this.language, "metric.cacheHitRate"), formatPercent(summary.cacheHitRate, 2), void 0, "accent")
+      );
+      this.cards.append(...cards);
+      if (this.overviewLegacyNote) {
+        this.overviewLegacyNote.style.display = this.records.some((record) => record.legacy) ? "" : "none";
+      }
+      this.renderModelTable(this.overviewModels, this.analysis.models);
+    }
+    renderCharts() {
+      if (!this.analysis) return;
+      const buckets = this.analysis.buckets;
+      if (this.charts[0]) renderTokenMix(this.charts[0], buckets, this.language, this.chartTooltip);
+      if (this.charts[1]) renderCacheChart(this.charts[1], buckets, this.language, this.chartTooltip);
+      if (this.charts[2]) renderLatencyChart(this.charts[2], buckets, this.language, this.chartTooltip);
+      if (this.charts[3]) renderTpsChart(this.charts[3], buckets, this.language, this.chartTooltip);
+      this.renderChartAverages();
+      this.renderModelTable(this.chartModels, this.analysis.models);
+    }
+    renderChartAverages() {
+      if (!this.analysis || !this.range) return;
+      const buckets = this.analysis.buckets;
+      const rate = tokenRateForRange(buckets, this.range.from, this.range.to);
+      const tokenAverage = rate ? t(this.language, "chart.avgTokens", {
+        value: formatCompact(rate.value),
+        unit: t(this.language, rate.unit === "h" ? "chart.unitHour" : "chart.unitDay")
+      }) : t(this.language, "chart.avgCache", { value: "N/A" });
+      const summary = this.analysis.summary;
+      const cacheAverage = averageBucketMetric(buckets, (bucket) => bucket.cacheHitRate);
+      const text2 = /* @__PURE__ */ new Map([
+        ["chart.tokens", tokenAverage],
+        ["chart.cache", t(this.language, "chart.avgCache", { value: formatPercent(cacheAverage, 2) })],
+        ["chart.ttft", t(this.language, "chart.avgTtft", { avg: formatMs(summary.ttftAvg), slowest: formatMs(summary.ttftSlowest) })],
+        ["chart.tps", t(this.language, "chart.avgTps", { avg: formatTps(summary.tpsAvg), slowest: formatTps(summary.tpsSlowest) })]
+      ]);
+      for (const [key, value] of text2) {
+        const target = this.chartAverages.get(key);
+        if (target) target.textContent = value;
+      }
+    }
+    renderModelTable(container, models) {
+      if (!container) return;
+      container.replaceChildren();
+      const visibleModels = models.filter((model) => model.totalTokens > 0);
+      if (!visibleModels.length) {
+        container.appendChild(this.empty(t(this.language, "table.emptyHint"), "table.empty"));
+        return;
+      }
+      const table = node("table", "ocgo-table");
+      const head = node("thead");
+      const headRow = node("tr");
+      const columns = [
+        ["table.model", "left"],
+        ["table.provider", "left"],
+        ["table.requests", ""],
+        ["table.totalTokens", ""],
+        ["table.success", ""],
+        ["table.hitRate", ""],
+        ["table.ttftAvg", ""],
+        ["table.tpsAvg", ""],
+        ["table.cost", ""]
+      ];
+      for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
+      head.appendChild(headRow);
+      const body = node("tbody");
+      for (const model of visibleModels) {
+        const row = node("tr");
+        const totalTokens = node("td", "ocgo-metric-hover", formatCompact(model.totalTokens));
+        const cost = node("td", "ocgo-metric-hover", formatUsd(model.costUsd));
+        this.bindModelMetricTooltip(totalTokens, model, "tokens");
+        this.bindModelMetricTooltip(cost, model, "cost");
+        row.append(
+          node("td", "left", model.model),
+          node("td", "left", model.provider || "—"),
+          node("td", "", formatNumber(model.requests)),
+          totalTokens,
+          node("td", "", formatPercent(model.successRate, 1)),
+          node("td", "", formatPercent(model.cacheHitRate, 2)),
+          node("td", "", formatMs(model.ttftAvg)),
+          node("td", "", formatTps(model.tpsAvg)),
+          cost
+        );
+        body.appendChild(row);
+      }
+      table.append(head, body);
+      container.appendChild(table);
+    }
+    bindModelMetricTooltip(cell, model, kind) {
+      cell.tabIndex = 0;
+      const data = this.modelMetricTooltip(model, kind);
+      cell.setAttribute("aria-label", [data.head, ...data.rows.map(([label, value]) => `${label} ${value}`), data.footer].filter(Boolean).join(" · "));
+      const show = (x, y) => {
+        if (!this.chartTooltip || !this.panel) return;
+        showDataTooltip(this.chartTooltip, data.head, data.rows, this.panel, x, y, data.footer);
+      };
+      cell.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
+      cell.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
+      cell.addEventListener("pointerleave", () => hideChartTooltip(this.chartTooltip));
+      cell.addEventListener("focus", () => {
+        const rect = cell.getBoundingClientRect();
+        show(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      });
+      cell.addEventListener("blur", () => hideChartTooltip(this.chartTooltip));
+    }
+    modelMetricTooltip(model, kind) {
+      const head = t(this.language, kind === "tokens" ? "tooltip.tokensTitle" : "tooltip.costTitle", {
+        model: model.model
+      });
+      if (kind === "tokens") {
+        return {
+          head,
+          rows: [
+            [t(this.language, "table.totalTokens"), formatNumber(model.totalTokens)],
+            [t(this.language, "table.input"), formatNumber(model.inputTokens)],
+            [t(this.language, "table.cacheRead"), formatNumber(model.cacheReadTokens)],
+            [t(this.language, "table.cacheWrite"), formatNumber(model.cacheWriteTokens)],
+            [t(this.language, "table.output"), formatNumber(model.outputTokens)]
+          ]
+        };
+      }
+      const breakdown = estimateModelCostBreakdown(this.analysis?.records ?? [], model, this.pricing?.tiers);
+      if (!breakdown) {
+        return {
+          head,
+          rows: [[t(this.language, "table.cost"), formatUsd(model.costUsd)]],
+          footer: t(this.language, "tooltip.costUnavailable")
+        };
+      }
+      return {
+        head,
+        rows: [
+          [t(this.language, "tooltip.inputCost"), formatUsd(breakdown.input)],
+          [t(this.language, "tooltip.outputCost"), formatUsd(breakdown.output)],
+          [t(this.language, "tooltip.cacheReadCost"), formatUsd(breakdown.cacheRead)],
+          [t(this.language, "tooltip.cacheWriteCost"), formatUsd(breakdown.cacheWrite)],
+          [t(this.language, "table.cost"), formatUsd(breakdown.total)]
+        ],
+        footer: `${t(this.language, "tooltip.estimated")} · ${t(this.language, "tooltip.estimatedHint")}`
+      };
+    }
+    renderRequests() {
+      if (!this.requestsTable || !this.requestPager || !this.analysis) return;
+      const records = this.analysis.records;
+      const pageSize = 100;
+      const pages = Math.max(1, Math.ceil(records.length / pageSize));
+      this.requestPage = Math.max(1, Math.min(pages, this.requestPage));
+      const start = (this.requestPage - 1) * pageSize;
+      const pageRecords = records.slice(start, start + pageSize);
+      this.requestsTable.replaceChildren();
+      if (!pageRecords.length) {
+        this.requestsTable.appendChild(this.empty(t(this.language, "table.emptyHint"), "table.empty"));
+      } else {
+        const table = node("table", "ocgo-table");
+        const head = node("thead");
+        const headRow = node("tr");
+        const columns = [
+          ["table.time", "left"],
+          ["table.status", "left"],
+          ["table.model", "left"],
+          ["table.provider", "left"],
+          ["table.ttft", ""],
+          ["table.tps", ""],
+          ["table.input", ""],
+          ["table.cacheRead", ""],
+          ["table.cacheWrite", ""],
+          ["table.output", ""],
+          ["table.cost", ""],
+          ["table.user", "left"],
+          ["table.open", ""]
+        ];
+        for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
+        head.appendChild(headRow);
+        const body = node("tbody");
+        for (const record of pageRecords) {
+          const row = node("tr");
+          const status = node("td", "left");
+          status.appendChild(node("span", `ocgo-pill ${record.outcome}`, record.outcome));
+          if (record.legacy) {
+            const legacy = node("span", "ocgo-pill legacy", t(this.language, "badge.legacy"));
+            legacy.style.marginLeft = "4px";
+            status.appendChild(legacy);
+          }
+          const user = this.principalLabel(record);
+          const detail = node("td");
+          if (!record.legacy && record.startedAt >= Date.now() - RETENTION_DAYS * 864e5) {
+            const link = node("a", "", "↗");
+            link.href = `${location.origin}/console/${record.workspaceID}/logs?range=30d&category=inference&log=${encodeURIComponent(record.id)}`;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            link.title = t(this.language, "table.open");
+            link.addEventListener("click", () => this.setOpen(false));
+            detail.appendChild(link);
+          } else {
+            detail.textContent = "—";
+          }
+          row.append(
+            node("td", "left", formatDateTime(record.startedAt)),
+            status,
+            node("td", "left", record.model || record.requestedModel || "—"),
+            node("td", "left", record.provider || "—"),
+            node("td", "", formatMs(computeTtft(record))),
+            node("td", "", formatTps(computeTps(record))),
+            node("td", "", formatCompact(record.inputTokens)),
+            node("td", "", formatCompact(record.cacheReadTokens)),
+            node("td", "", formatCompact(record.cacheWriteTokens + record.cacheWrite1hTokens)),
+            node("td", "", formatCompact(record.outputTokens)),
+            node("td", "", formatUsd(record.costUsd)),
+            node("td", "left", user),
+            detail
+          );
+          body.appendChild(row);
+        }
+        table.append(head, body);
+        this.requestsTable.appendChild(table);
+      }
+      this.requestPager.replaceChildren();
+      const info = node("span", "", t(this.language, "table.page", { page: this.requestPage, pages }));
+      const previous = button(t(this.language, "table.prev"));
+      previous.disabled = this.requestPage <= 1;
+      previous.addEventListener("click", () => {
+        this.requestPage -= 1;
+        this.renderRequests();
+      });
+      const next = button(t(this.language, "table.next"));
+      next.disabled = this.requestPage >= pages;
+      next.addEventListener("click", () => {
+        this.requestPage += 1;
+        this.renderRequests();
+      });
+      this.requestPager.append(previous, info, next);
+    }
+    renderData() {
+      if (!this.dataInfo || !this.dataActions) return;
+      this.dataInfo.replaceChildren();
+      const state = this.syncState;
+      const info = node("dl", "ocgo-kv");
+      const add = (label, value) => {
+        info.append(node("dt", "", label), node("dd", "", value));
+      };
+      const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
+      add(t(this.language, "data.workspace"), workspace ? `${workspace.name} (${workspace.id})` : this.workspaceID || "—");
+      add(t(this.language, "data.recordCount"), formatNumber(this.totalRecordCount));
+      add(t(this.language, "status.official", { n: state?.retentionDays ?? RETENTION_DAYS }), t(this.language, "data.retentionNote"));
+      add(t(this.language, "status.lastSync", { time: state?.lastSuccessfulSyncAt ? formatRelative(state.lastSuccessfulSyncAt, Date.now(), this.language) : t(this.language, "status.never") }), "");
+      if (state?.coverageStart !== void 0 || state?.coverageEnd !== void 0) {
+        add(
+          t(this.language, "status.coverage", {
+            from: state?.coverageStart !== void 0 ? formatDateTime(state.coverageStart) : "—",
+            to: state?.coverageEnd !== void 0 ? formatDateTime(state.coverageEnd) : "—"
+          }),
+          ""
+        );
+      }
+      this.dataInfo.appendChild(info);
+      if (!state?.backfillComplete && this.workspaceID) {
+        this.dataInfo.appendChild(node("div", "ocgo-warning", t(this.language, "status.partial")));
+      }
+      if (state?.gapDetected) {
+        this.dataInfo.appendChild(node("div", "ocgo-warning", t(this.language, "status.gap", { n: state.retentionDays || RETENTION_DAYS })));
+      }
+      if (this.records.some((record) => record.legacy)) {
+        this.dataInfo.appendChild(node("p", "ocgo-note", t(this.language, "legacy.note")));
+      }
+      this.dataInfo.appendChild(node("p", "ocgo-note", t(this.language, "data.privacy")));
+      const storageNote = node("p", "ocgo-note");
+      this.storageNote = storageNote;
+      this.dataInfo.appendChild(storageNote);
+      this.dataActions.replaceChildren();
+      const syncNow = button(t(this.language, "status.syncNow"));
+      syncNow.disabled = this.busy || !this.workspaceID;
+      syncNow.addEventListener("click", () => void this.sync(false));
+      const syncFull = button(t(this.language, "status.syncFull"));
+      syncFull.disabled = this.busy || !this.workspaceID;
+      syncFull.addEventListener("click", () => void this.sync(true));
+      const exportCsv = button(t(this.language, "data.exportCsv"));
+      exportCsv.disabled = !this.analysis?.records.length;
+      exportCsv.addEventListener("click", () => this.exportCsv());
+      const exportJson = button(t(this.language, "data.exportJson"));
+      exportJson.disabled = !this.totalRecordCount;
+      exportJson.addEventListener("click", () => void this.exportJson());
+      const clear = button(this.clearArmed ? t(this.language, "data.clearConfirm") : t(this.language, "data.clear"), "ocgo-danger-btn");
+      clear.classList.toggle("ocgo-confirm", this.clearArmed);
+      clear.disabled = this.busy || Boolean(this.syncPromise) || !this.workspaceID;
+      clear.addEventListener("click", () => void this.clearHistory());
+      const copy = button(t(this.language, "data.copyLogs"));
+      copy.addEventListener("click", () => void this.copyLogs());
+      this.dataActions.append(syncNow, syncFull, exportCsv, exportJson, clear, copy);
+      void storageEstimate().then(({ usage }) => {
+        if (this.storageNote === storageNote) {
+          storageNote.textContent = t(this.language, "data.storage", { size: formatBytes(usage) });
+        }
+      });
+      this.renderLogs();
+      this.renderPricing();
+    }
+    renderPricing() {
+      if (!this.pricingPanel) return;
+      this.pricingPanel.replaceChildren();
+      if (!this.pricing) {
+        this.pricingPanel.appendChild(node(
+          "p",
+          "ocgo-note",
+          t(this.language, this.pricingLoading ? "data.pricingLoading" : "data.pricingEmpty")
+        ));
+        if (this.pricingError && !this.pricingLoading) {
+          this.pricingPanel.appendChild(node("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
+        }
+        return;
+      }
+      const tiers = [...this.pricing.tiers].sort((a, b) => {
+        const modelOrder = a.displayName.localeCompare(b.displayName);
+        if (modelOrder !== 0) return modelOrder;
+        const periodOrder = (a.period ?? "").localeCompare(b.period ?? "");
+        if (periodOrder !== 0) return periodOrder;
+        return (a.minContextTokens ?? 0) - (b.minContextTokens ?? 0);
+      });
+      const modelCount = new Set(tiers.map((tier) => tier.modelID)).size;
+      const meta = node("div", "ocgo-pricing-meta");
+      meta.appendChild(node("span", "", t(this.language, "data.pricingMeta", {
+        time: formatDateTime(this.pricing.fetchedAt),
+        n: modelCount
+      })));
+      const source = node("a", "", t(this.language, "data.pricingSource"));
+      source.href = this.pricing.source;
+      source.target = "_blank";
+      source.rel = "noreferrer";
+      meta.appendChild(source);
+      this.pricingPanel.appendChild(meta);
+      if (this.pricingError) {
+        this.pricingPanel.appendChild(node("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
+      }
+      const wrap = node("div", "ocgo-table-wrap ocgo-pricing-table-wrap");
+      const table = node("table", "ocgo-table ocgo-pricing-table");
+      const head = node("thead");
+      const headRow = node("tr");
+      const columns = [
+        ["data.pricingModel", "left"],
+        ["data.pricingPeriod", "left"],
+        ["data.pricingContext", "left"],
+        ["data.pricingInput", ""],
+        ["data.pricingOutput", ""],
+        ["data.pricingCacheRead", ""],
+        ["data.pricingCacheWrite", ""]
+      ];
+      for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
+      head.appendChild(headRow);
+      const body = node("tbody");
+      for (const tier of tiers) {
+        const period = tier.period ? t(this.language, tier.period === "peak" ? "data.pricingPeak" : "data.pricingOffPeak") : t(this.language, "data.pricingAllDay");
+        const context = tier.maxContextTokens !== void 0 ? `≤ ${formatCompact(tier.maxContextTokens)}` : tier.minContextTokens !== void 0 ? `> ${formatCompact(Math.max(0, tier.minContextTokens - 1))}` : t(this.language, "data.pricingAllContext");
+        const periodCell = node("td", "left");
+        periodCell.appendChild(node("span", `ocgo-price-period ${tier.period ?? "all"}`, period));
+        const row = node("tr");
+        row.append(
+          node("td", "left", tier.displayName),
+          periodCell,
+          node("td", "left", context),
+          node("td", "", formatUsd(tier.input)),
+          node("td", "", formatUsd(tier.output)),
+          node("td", "", formatUsd(tier.cacheRead)),
+          node("td", "", formatUsd(tier.cacheWrite))
+        );
+        body.appendChild(row);
+      }
+      table.append(head, body);
+      wrap.appendChild(table);
+      this.pricingPanel.appendChild(wrap);
+    }
+    renderLogs() {
+      if (!this.logList) return;
+      const entries = this.logger.all().slice(-80);
+      this.logList.replaceChildren();
+      if (!entries.length) {
+        this.logList.textContent = t(this.language, "data.noLogs");
+        return;
+      }
+      const formatter = new Intl.DateTimeFormat(void 0, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+      for (const entry of entries) {
+        const row = node("div", "ocgo-log-row");
+        row.append(
+          node("span", "ocgo-log-time", formatter.format(new Date(entry.time))),
+          node("span", `ocgo-log-level ${entry.level}`, t(this.language, `log.level.${entry.level}`)),
+          node("span", "ocgo-log-msg", formatLogEntry(entry, this.language))
+        );
+        this.logList.appendChild(row);
+      }
+      this.logList.scrollTop = this.logList.scrollHeight;
+    }
+    empty(message, titleKey = "empty.title") {
+      const empty = node("div", "ocgo-empty");
+      const strong = node("strong", "", t(this.language, titleKey));
+      const description = node("span", "", message);
+      empty.append(strong, description);
+      return empty;
+    }
+    async refreshRoute() {
+      const workspaceID = getWorkspaceID();
+      const changed = workspaceID !== this.workspaceID;
+      if (!changed) {
+        this.render();
+        return;
+      }
+      this.workspaceID = workspaceID;
+      this.principals = [];
+      this.errorMessage = workspaceID ? "" : t(this.language, "error.workspace");
+      this.requestPage = 1;
+      this.busy = false;
+      this.progress = void 0;
+      const previousSync = this.syncPromise;
+      this.controller?.abort();
+      this.controller = void 0;
+      if (previousSync) await previousSync.catch(() => void 0);
+      if (!workspaceID) {
+        this.records = [];
+        this.totalRecordCount = 0;
+        this.syncState = void 0;
+        this.render();
+        return;
+      }
+      try {
+        try {
+          const migrated = await migrateLegacyUsage(workspaceID);
+          if (migrated) this.logger.info("log.migrated", { n: migrated });
+        } catch (error) {
+          this.logger.warn("log.migrationSkipped", { error: error instanceof Error ? error.message : String(error) });
+        }
+        await this.reloadRecords();
+        void this.refreshWorkspaces();
+        void this.refreshPrincipals();
+        if (this.open) window.setTimeout(() => this.autoSyncIfStale(), 200);
+      } catch (error) {
+        this.setError(error);
+      }
+    }
+    principalLabel(record) {
+      if (record.serviceAccountID) {
+        const principal = this.principals.find((item) => item.serviceUserId === record.serviceAccountID);
+        return principal?.name || principal?.email || shortID(record.serviceAccountID);
+      }
+      if (record.userID) {
+        const principal = this.principals.find((item) => item.userId === record.userID);
+        return principal?.name || principal?.email || shortID(record.userID);
+      }
+      return "—";
+    }
+    async refreshPrincipals() {
+      const currentWorkspaceID = this.workspaceID;
+      if (!currentWorkspaceID) return;
+      this.principalsController?.abort();
+      const controller = new AbortController();
+      this.principalsController = controller;
+      try {
+        const principals = await listUsagePrincipals(currentWorkspaceID, controller.signal);
+        if (this.workspaceID !== currentWorkspaceID || controller.signal.aborted) return;
+        this.principals = principals;
+        this.renderFilters();
+        this.renderRequests();
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          this.logger.warn("log.principalSkipped", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+    async refreshWorkspaces() {
+      try {
+        this.workspaces = await listWorkspaces();
+        const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
+        if (workspace) this.logger.info("log.workspace", { name: workspace.name });
+        this.renderChrome();
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          this.logger.warn("log.workspaceListFailed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+    async reloadRecords() {
+      const loadSeq = ++this.rangeLoadSeq;
+      const workspaceID = this.workspaceID;
+      if (!workspaceID) {
+        this.records = [];
+        this.totalRecordCount = 0;
+        this.syncState = void 0;
+        this.render();
+        return;
+      }
+      const range = this.currentRange();
+      const [records, totalRecordCount, syncState] = await Promise.all([
+        getRecords(workspaceID, range.from, range.to),
+        countRecords(workspaceID),
+        getSyncState(workspaceID)
+      ]);
+      if (loadSeq !== this.rangeLoadSeq || this.workspaceID !== workspaceID) return;
+      this.records = records;
+      this.totalRecordCount = totalRecordCount;
+      this.syncState = syncState;
+      this.render();
+      void this.ensurePricing();
+    }
+    sync(full) {
+      if (this.syncPromise) return this.syncPromise;
+      let tracked;
+      tracked = this.runSync(full).finally(() => {
+        if (this.syncPromise === tracked) this.syncPromise = void 0;
+      });
+      this.syncPromise = tracked;
+      return tracked;
+    }
+    async runSync(full) {
+      if (!this.workspaceID) {
+        this.errorMessage = t(this.language, "error.workspace");
+        this.render();
+        return;
+      }
+      if (this.busy) return;
+      this.busy = true;
+      this.errorMessage = "";
+      this.progress = { phase: "starting", page: 0, fetched: 0, saved: 0 };
+      this.controller = new AbortController();
+      this.renderChrome();
+      this.renderStatus();
+      this.logger.info(full ? "log.syncBackfillStart" : "log.syncIncrementalStart");
+      try {
+        const result = await syncWorkspace({
+          workspaceID: this.workspaceID,
+          forceFull: full,
+          signal: this.controller.signal,
+          onProgress: (progress) => {
+            this.progress = progress;
+            this.renderStatus();
+          }
+        });
+        await this.reloadRecords();
+        this.logger.info(result.cacheHit ? "log.syncCached" : "log.syncComplete", {
+          fetched: result.fetched,
+          added: result.added,
+          pages: result.pages
+        });
+        if (this.open) this.showToast(result.added > 0 ? "sync.toast.updated" : "sync.toast.latest", { n: result.added });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          this.logger.warn("log.syncStopped");
+        } else {
+          this.setError(error);
+          this.logger.error("log.error", { error: error instanceof Error ? error.message : String(error) });
+        }
+        await this.reloadRecords();
+      } finally {
+        this.busy = false;
+        this.progress = void 0;
+        this.controller = void 0;
+        this.renderChrome();
+        this.renderStatus();
+        if (this.activeTab === "data") this.renderData();
+      }
+    }
+    stopSync() {
+      this.controller?.abort();
+    }
+    autoSyncIfStale() {
+      if (!this.hasOpened || !this.workspaceID || this.busy || this.syncPromise) return;
+      if (document.visibilityState !== "visible") return;
+      const last = this.syncState?.lastSuccessfulSyncAt ?? 0;
+      if (Date.now() - last < 9 * 60 * 1e3) return;
+      void this.sync(false);
+    }
+    startAutoSync() {
+      if (this.autoInterval) window.clearInterval(this.autoInterval);
+      this.autoInterval = window.setInterval(() => this.autoSyncIfStale(), 10 * 60 * 1e3);
+    }
+    handleVisibility() {
+      if (document.visibilityState === "visible") this.autoSyncIfStale();
+    }
+    handleCaptured(workspaceID, count) {
+      this.logger.info("status.captured", { n: count });
+      if (workspaceID !== this.workspaceID) return;
+      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = window.setTimeout(() => {
+        void this.reloadRecords();
+      }, 300);
+    }
+    setError(error) {
+      if (error instanceof ApiError) {
+        const key = {
+          session: "error.session",
+          permission: "error.permission",
+          cursor: "error.cursor",
+          "rate-limit": "error.rate",
+          "bad-request": "error.badRequest",
+          contract: "error.contract",
+          network: "error.network",
+          server: "error.unknown"
+        }[error.kind];
+        this.errorMessage = t(this.language, key, { message: error.message });
+      } else {
+        this.errorMessage = t(this.language, "error.unknown", { message: error instanceof Error ? error.message : String(error) });
+      }
+      this.renderStatus();
+      this.renderError();
+    }
+    exportCsv() {
+      if (!this.analysis) return;
+      const header = [
+        "time",
+        "status",
+        "model",
+        "provider",
+        "ttft_ms",
+        "tps",
+        "input",
+        "cache_read",
+        "cache_write",
+        "cache_write_1h",
+        "output",
+        "reasoning",
+        "cost_usd",
+        "user_id",
+        "service_account_id",
+        "request_id",
+        "legacy"
+      ];
+      const rows = this.analysis.records.map((record) => [
+        new Date(record.startedAt).toISOString(),
+        record.outcome,
+        record.model,
+        record.provider,
+        computeTtft(record) ?? "",
+        computeTps(record) ?? "",
+        record.inputTokens,
+        record.cacheReadTokens,
+        record.cacheWriteTokens,
+        record.cacheWrite1hTokens,
+        record.outputTokens,
+        record.reasoningTokens,
+        record.costUsd,
+        record.userID,
+        record.serviceAccountID,
+        record.requestID,
+        record.legacy ? "true" : "false"
+      ]);
+      const csv = [header, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+      downloadText(`opencode-lens-${this.workspaceID ?? "workspace"}-${Date.now()}.csv`, `\uFEFF${csv}`, "text/csv;charset=utf-8");
+      this.logger.info("log.exportCsv", { n: rows.length });
+    }
+    async exportJson() {
+      if (!this.workspaceID) return;
+      const records = await getAllRecords(this.workspaceID);
+      const payload = {
+        exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        version: APP_VERSION,
+        workspaceID: this.workspaceID,
+        syncState: this.syncState,
+        records
+      };
+      downloadText(
+        `opencode-lens-${this.workspaceID}-${Date.now()}.json`,
+        JSON.stringify(payload, null, 2),
+        "application/json;charset=utf-8"
+      );
+      this.logger.info("log.exportJson", { n: records.length });
+    }
+    async clearHistory() {
+      if (!this.workspaceID) return;
+      if (!this.clearArmed) {
+        this.clearArmed = true;
+        this.renderData();
+        this.clearTimer = window.setTimeout(() => {
+          this.clearArmed = false;
+          this.renderData();
+        }, 4e3);
+        return;
+      }
+      if (this.clearTimer) window.clearTimeout(this.clearTimer);
+      this.clearArmed = false;
+      if (this.syncPromise) {
+        this.stopSync();
+        await this.syncPromise.catch(() => void 0);
+      }
+      await clearWorkspace(this.workspaceID);
+      try {
+        await clearLegacyUsage(this.workspaceID);
+      } catch (error) {
+        this.logger.warn("log.legacyCleanupSkipped", { error: error instanceof Error ? error.message : String(error) });
+      }
+      const workspaceID = this.workspaceID;
+      await updateSyncState(workspaceID, () => ({
+        workspaceID,
+        retentionDays: RETENTION_DAYS,
+        backfillComplete: false,
+        gapDetected: false,
+        legacyImportedAt: Date.now()
+      }));
+      this.records = [];
+      this.totalRecordCount = 0;
+      this.syncState = await getSyncState(this.workspaceID);
+      this.requestPage = 1;
+      this.logger.warn("log.historyCleared");
+      this.render();
+    }
+    async copyLogs() {
+      const text2 = this.logger.all().map((entry) => `${new Date(entry.time).toISOString()} [${t(this.language, `log.level.${entry.level}`)}] ${formatLogEntry(entry, this.language)}`).join("\n");
+      try {
+        await navigator.clipboard.writeText(text2);
+        this.logger.info("log.diagnosticsCopied");
+      } catch {
+        const textarea = document.createElement("textarea");
+        textarea.value = text2;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+        this.logger.info("log.diagnosticsCopied");
+      }
+    }
+  };
+
+  // src/main.ts
+  var VERSION = APP_VERSION;
+  var logger = new Logger();
+  var panel;
+  var routeTimer;
+  function scheduleRouteRefresh() {
+    if (routeTimer) window.clearTimeout(routeTimer);
+    routeTimer = window.setTimeout(() => {
+      void panel?.refreshRoute();
+    }, 60);
   }
-  function fallbackCopy(text) {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand("copy"); info("log", t("log.copied")); } catch (e) { warn("log", t("log.copyFail"), String(e)); }
-    ta.remove();
-  }  function buildUI() {
-    const fab = el("button", { id: "ocgo-fab", title: t("app.title") });
-    fab.innerHTML = '<svg viewBox="0 0 164 164" xmlns="http://www.w3.org/2000/svg" width="100" height="100" style="width:100px;height:100px;max-width:none;max-height:none;" aria-hidden="true" focusable="false"><defs><linearGradient id="ocgoFabAccent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#b8c0cc"/><stop offset="1" stop-color="#6f7885"/></linearGradient></defs><path class="ocgo-logo-diamond" d="M48 67 L77 38 L106 67 L77 96 Z" fill="none" stroke="url(#ocgoFabAccent)" stroke-width="13" stroke-linejoin="round"/><path class="ocgo-logo-check" d="M58 91 L87 62 L116 91" fill="none" stroke="#ffffff" stroke-opacity=".38" stroke-width="7" stroke-linecap="round"/></svg>';
-    const panel = el("div", { id: "ocgo-panel" });
-    panel.classList.add("ocgo-hidden");
-    const savedSize = loadPanelSize();
-    if (savedSize) {
-      panel.style.width = savedSize.w + "px";
-      panel.style.height = savedSize.h + "px";
-    }
-
-    const head = el("div", { id: "ocgo-head" });
-    const headDots = el("span", { class: "ocgo-dots" });
-    headDots.append(el("span", { class: "ocgo-dot" }), el("span", { class: "ocgo-dot" }), el("span", { class: "ocgo-dot" }));
-    head.appendChild(headDots);
-    head.appendChild(el("span", { class: "ocgo-title" }, t("app.title")));
-    const langSel = el("select", { id: "ocgo-lang" });
-    for (const [v, label] of [["auto", "Auto"], ["zh", "中文"], ["en", "English"]]) {
-      langSel.appendChild(el("option", { value: v }, label));
-    }
-    langSel.value = langPref;
-    head.appendChild(langSel);
-    const btnClose = el("button", { id: "ocgo-close", title: t("app.close") }, "✕");
-    head.appendChild(btnClose);
-
-    const tabs = el("div", { id: "ocgo-tabs" });
-    const tabData = el("button", { "data-tab": "data" }, t("tabs.data"));
-    const tabHistory = el("button", { "data-tab": "history" }, t("tabs.history"));
-    const tabLog = el("button", { "data-tab": "log" }, t("tabs.log"));
-    tabData.classList.add("ocgo-active");
-    tabs.append(tabData, tabHistory, tabLog);
-
-    const body = el("div", { id: "ocgo-body" });
-
-    // ---- data tab ----
-    const dataTab = el("div", { class: "ocgo-tab ocgo-active", id: "ocgo-tab-data" });
-    const wsRow = el("div", { id: "ocgo-ws-row" });
-    const ws = el("select", { id: "ocgo-ws" });
-    ws.appendChild(el("option", { value: "" }, t("ws.notLoaded")));
-    const btnRefreshWs = el("button", {}, t("ws.refresh"));
-    wsRow.append(ws, btnRefreshWs);
-    const btns = el("div", { id: "ocgo-btns" });
-    const btnFetchAllUsage = el("button", { class: "ocgo-primary" }, t("usage.fetchAll"));
-    const btnClearCache = el("button", {}, t("usage.clearHistory"));
-    const btnStop = el("button", { class: "ocgo-stop", id: "ocgo-btn-stop" }, t("usage.stop"));
-    const btnClearConfirmYes = el("button", { class: "ocgo-clear-yes" }, t("usage.clearConfirmYes"));
-    const btnClearConfirmNo = el("button", {}, t("usage.clearConfirmNo"));
-    const clearConfirm = el("span", { id: "ocgo-clear-confirm" });
-    clearConfirm.append(el("span", {}, t("usage.clearConfirm")), btnClearConfirmYes, btnClearConfirmNo);
-    btns.append(btnFetchAllUsage, btnClearCache, btnStop, clearConfirm);
-    const status = el("div", { id: "ocgo-status" }, t("app.ready"));
-    const cacheState = el("div", { id: "ocgo-history-state" });
-    // 分析区直接并入数据页
-    const rangeRow = el("div", { id: "ocgo-range" });
-    const rangeSel = el("select", { id: "ocgo-range-mode" });
-    for (const [v, l] of [["today", t("range.today")], ["1d", t("range.1d")], ["7d", t("range.7d")], ["30d", t("range.30d")], ["all", t("range.all")], ["custom", t("range.custom")]]) {
-      rangeSel.appendChild(el("option", { value: v }, l));
-    }
-    rangeSel.value = "today";
-    rangeMode = rangeSel.value; // 初始化状态与下拉框一致
-    const customRow = el("div", { id: "ocgo-custom-range" });
-    const customFrom = el("input", { type: "datetime-local", id: "ocgo-range-from" });
-    const customTo = el("input", { type: "datetime-local", id: "ocgo-range-to" });
-    customRow.append(el("span", {}, t("range.from")), customFrom, el("span", {}, t("range.to")), customTo);
-    rangeRow.append(el("span", {}, t("range.label")), rangeSel);
-    const anaBtns = el("div", { id: "ocgo-analyze-btns" });
-    const btnAnalyze = el("button", { class: "ocgo-primary" }, t("analysis.start"));
-    const btnRefreshUsage = el("button", {}, t("analysis.refresh"));
-    const btnExportReport = el("button", {}, t("analysis.export"));
-    anaBtns.append(btnAnalyze, btnRefreshUsage, btnExportReport);
-    const analysis = el("div", { id: "ocgo-analysis" }, t("analysis.placeholder"));
-    dataTab.append(wsRow, btns, status, cacheState, rangeRow, customRow, anaBtns, analysis);
-
-    // ---- history tab：近期 API 使用情况和成本 ----
-    const historyTab = el("div", { class: "ocgo-tab", id: "ocgo-tab-history" });
-    const historyBar = el("div", { id: "ocgo-range" });
-    const historyRange = el("select", { id: "ocgo-history-range" });
-    for (const [v, l] of [["today", t("range.today")], ["1d", t("range.1d")], ["7d", t("range.7d")], ["30d", t("range.30d")], ["all", t("range.all")], ["custom", t("range.custom")]]) {
-      historyRange.appendChild(el("option", { value: v }, l));
-    }
-    historyRange.value = "7d";
-    const historyCustom = el("div", { id: "ocgo-view-custom" });
-    const historyFrom = el("input", { type: "datetime-local", id: "ocgo-history-from" });
-    const historyTo = el("input", { type: "datetime-local", id: "ocgo-history-to" });
-    historyCustom.append(el("span", {}, t("range.from")), historyFrom, el("span", {}, t("range.to")), historyTo);
-    const historyBtns = el("div", { id: "ocgo-analyze-btns" });
-    const btnHistoryExport = el("button", {}, t("history.export"));
-    historyBtns.append(btnHistoryExport);
-    const historyStatus = el("div", { id: "ocgo-history-status" });
-    const historyTable = el("div", { id: "ocgo-history" }, t("history.placeholder"));
-    historyTab.append(historyBar, historyCustom, historyBtns, historyStatus, historyTable);
-    historyBar.append(el("span", {}, t("range.label")), historyRange);
-
-    // ---- log tab ----
-    const logTab = el("div", { class: "ocgo-tab", id: "ocgo-tab-log" });
-    const logBtns = el("div", { id: "ocgo-btns" });
-    const btnCopyLog = el("button", {}, t("log.copy"));
-    const btnExportLog = el("button", {}, t("log.export"));
-    const btnClearLog = el("button", {}, t("log.clear"));
-    logBtns.append(btnCopyLog, btnExportLog, btnClearLog);
-    const logWrap = el("div", { id: "ocgo-log-wrap" });
-    const logHead = el("div", { id: "ocgo-log-head" });
-    const logStats = el("span", { id: "ocgo-stats" });
-    logHead.append(el("span", { class: "ocgo-title" }, t("log.title")), logStats);
-    const logList = el("div", { id: "ocgo-log-list" });
-    logWrap.append(logHead, logList);
-    logTab.append(logBtns, logWrap);
-
-    body.append(dataTab, historyTab, logTab);
-    panel.append(head, tabs, body);
-    document.body.append(fab, panel);
-    initResize(panel);
-
-    ui = { fab, panel, ws, status, cacheState, analysis, logList, logStats, btnStop, clearConfirm,
-      customFrom, customTo, rangeSel, dataTab, historyTab, historyRange, historyFrom, historyTo, historyStatus, historyTable, logTab, tabData, tabHistory, tabLog, langSel };    fab.addEventListener("click", () => panel.classList.toggle("ocgo-hidden"));
-    btnClose.addEventListener("click", () => panel.classList.add("ocgo-hidden"));
-    langSel.addEventListener("change", () => setLang(langSel.value));
-    logHead.addEventListener("click", () => logList.style.display = logList.style.display === "none" ? "" : "none");
-    for (const b of [tabData, tabHistory, tabLog]) {
-      b.addEventListener("click", () => switchTab(b.getAttribute("data-tab")));
-    }
-
-    rangeSel.addEventListener("change", () => {
-      rangeMode = rangeSel.value;
-      customRow.classList.toggle("ocgo-show", rangeMode === "custom");
-      syncRangeInputs(rangeMode, customFrom, customTo); // 自定义时间随预设范围联动
-      runTask(t("task.analyze"), () => runAnalysis(false));         // 切换范围自动分析
-    });
-
-    btnStop.addEventListener("click", requestStop);
-
-    btnRefreshWs.addEventListener("click", refreshWorkspaces);
-    btnFetchAllUsage.addEventListener("click", () => runTask(t("task.fetchAll"), () => fetchAllUsageWithProgress(currentWorkspace())));
-    btnClearCache.addEventListener("click", () => clearConfirm.classList.add("ocgo-show"));
-    btnClearConfirmYes.addEventListener("click", async () => {
-      clearConfirm.classList.remove("ocgo-show");
-      await clearCache();
-      setStatus(t("status.historyCleared"));
-      await renderCacheState();
-    });
-    btnClearConfirmNo.addEventListener("click", () => clearConfirm.classList.remove("ocgo-show"));
-
-    btnAnalyze.addEventListener("click", () => runTask(t("task.analyze"), () => runAnalysis(false)));
-    btnRefreshUsage.addEventListener("click", () => runTask(t("task.analyzeRefresh"), () => runAnalysis(true)));
-    btnExportReport.addEventListener("click", exportReport);
-
-    historyRange.addEventListener("change", () => {
-      historyCustom.classList.toggle("ocgo-show", historyRange.value === "custom");
-      syncRangeInputs(historyRange.value, historyFrom, historyTo); // 从/到 随范围变化
-      renderHistory();
-    });
-    historyFrom.addEventListener("change", () => { if (historyRange.value === "custom") renderHistory(); });
-    historyTo.addEventListener("change", () => { if (historyRange.value === "custom") renderHistory(); });
-    btnHistoryExport.addEventListener("click", exportHistoryCsv);
-
-    btnCopyLog.addEventListener("click", copyLogs);
-    btnExportLog.addEventListener("click", () => downloadJson("opencodego-logs", logBuffer));
-    btnClearLog.addEventListener("click", clearLogs);
-
-    for (const entry of logBuffer) renderLogEntry(entry, true);
-    updateLogStats();
-    renderCacheState();
+  function patchHistory() {
+    const win2 = window;
+    if (win2.__ocgoLensHistoryPatched) return;
+    win2.__ocgoLensHistoryPatched = true;
+    const push = history.pushState.bind(history);
+    const replace = history.replaceState.bind(history);
+    history.pushState = function patchedPushState(data, unused, url) {
+      push(data, unused, url);
+      scheduleRouteRefresh();
+    };
+    history.replaceState = function patchedReplaceState(data, unused, url) {
+      replace(data, unused, url);
+      scheduleRouteRefresh();
+    };
+    window.addEventListener("popstate", scheduleRouteRefresh);
+    window.addEventListener("hashchange", scheduleRouteRefresh);
   }
-
-  function switchTab(name) {
-    if (!ui) return;
-    const map = { data: ui.dataTab, history: ui.historyTab, log: ui.logTab };
-    const btnMap = { data: ui.tabData, history: ui.tabHistory, log: ui.tabLog };
-    for (const k in map) map[k].classList.toggle("ocgo-active", k === name);
-    for (const k in btnMap) btnMap[k].classList.toggle("ocgo-active", k === name);
-    if (ui.clearConfirm) ui.clearConfirm.classList.remove("ocgo-show");
-    if (name === "history") renderHistory();
-  }
-
-  // 通用任务包装：互斥 + 停止 + 状态恢复。fn 内部负责 setTaskBusy 的任务除外。
-  async function runTask(label, fn) {
-    if (task.running) {
-      setStatus(t("status.taskBusy", { label: task.label }));
-      warn("task", t("log.taskIgnored", { label: label, cur: task.label }));
-      return;
-    }
-    setStatus(t("status.taskRunning", { label: label }));
+  function boot() {
+    if (location.hostname !== "opencode.ai" || !location.pathname.startsWith("/console")) return;
+    if (document.getElementById("ocgo-lens-host")) return;
     try {
-      await fn();
-    } catch (e) {
-      if (e && e.name === "AbortError") {
-        setStatus(t("status.taskStopped", { label: label }));
-        info("task", t("log.taskStopped", { label: label }));
-      } else {
-        error("task", t("log.taskFailed", { label: label }), String(e && e.message || e));
-        setStatus(t("status.taskFailed", { label: label, err: String(e && e.message || e) }));
-      }
-    } finally {
-      await renderCacheState();
+      patchHistory();
+      installRequestLogCapture(({ workspaceID, page }) => {
+        void persistCapturedPage(workspaceID, page.items).then((count) => {
+          if (count > 0) panel?.handleCaptured(workspaceID, count);
+        }).catch((error) => logger.warn("log.captureFailed", { error: error instanceof Error ? error.message : String(error) }));
+      });
+      panel = new Panel(logger);
+      panel.mount();
+      void panel.refreshRoute();
+      logger.info("log.ready", { version: VERSION });
+    } catch (error) {
+      logger.error("log.bootFailed", { error: error instanceof Error ? error.message : String(error) });
+      console.error("[OpenCode Performance Lens]", error);
     }
   }
-
-  async function exportReport() {
-    const ws = currentWorkspace();
-    if (!ws) { setStatus(t("status.noWorkspace")); return; }
-    const usage = await loadUsage(ws);
-    const range = currentRange();
-    const analysis = analyzeUsage(usage.records, range.from, range.to);
-    const report = {
-      exportedAt: new Date().toISOString(),
-      workspace: ws,
-      range: { label: range.label, from: new Date(range.from).toISOString(), to: range.to === Infinity ? "Infinity" : new Date(range.to).toISOString() },
-      cache: usage.meta || null,
-      total: analysis.total,
-      cacheHitRate: analysis.cacheHitRate,
-      byModel: analysis.byModel,
-      byDay: analysis.byDay,
-    };
-    downloadJson("opencodego-report", report);
-    info("report", t("log.reportExported"), { range: range.label });
-  }  function renderLogEntry(entry, skipLimit) {
-    if (!ui) return;
-    const list = ui.logList;
-    if (!skipLimit && list.childElementCount > MAX_LOGS) list.innerHTML = "";
-    const row = el("div", { class: "ocgo-log ocgo-" + entry.level });
-    row.appendChild(el("span", { class: "ocgo-lv" }, entry.level));
-    row.appendChild(el("span", { class: "ocgo-cat" }, entry.cat));
-    row.appendChild(el("span", { style: "color:#8b949e;flex:0 0 64px" }, entry.t.slice(11, 19)));
-    const msg = el("span", {}, entry.msg);
-    if (entry.data && entry.data !== "null") {
-      msg.appendChild(el("span", { style: "color:#7ee787" }, " " + String(entry.data)));
-    }
-    row.appendChild(msg);
-    list.appendChild(row);
-    list.scrollTop = list.scrollHeight;
-  }
-
-  function updateLogStats() {
-    if (!ui) return;
-    const counts = { info: 0, warn: 0, error: 0 };
-    for (const e of logBuffer) if (counts[e.level] !== undefined) counts[e.level]++;
-    ui.logStats.textContent = t("log.stats", { n: logBuffer.length, e: counts.error, w: counts.warn, i: counts.info });
-  }
-
-  // =====================================================================
-  // 12. 启动
-  // =====================================================================
-  function init() {
-    if (!config.enabled) {
-      console.log(t("log.disabled"));
-      return;
-    }
-    if (location.hostname !== "opencode.ai") return;
-    const start = () => {
-      injectStyle();
-      buildUI();
-      info("boot", t("log.boot"), { version: "0.10.0", url: location.href });
-      if (location.pathname.includes("/workspace/")) {
-        refreshWorkspaces().catch(() => {});
-      } else {
-        setTimeout(() => { if (ui) ui.panel.classList.remove("ocgo-hidden"); }, 600);
-      }
-    };
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", start);
-    } else {
-      start();
-    }
-  }
-
-  // 尽早安装 fetch 钩子（document-start）
-  if (config.enabled && location.hostname === "opencode.ai") {
-    installFetchHook();
-  }
-
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", boot, { once: true });
   } else {
-    init();
+    boot();
   }
-
-  // 测试钩子：e2e 冒烟测试依赖 cacheUsage/loadUsage/clearCache
-  window.__ocgo = {
-    version: "0.10.0",
-    cacheUsage,
-    loadUsage,
-    assessUsageCache,
-    clearCache,
-    isRetryableError,
+  var win = window;
+  win.__ocgoLens = {
+    version: VERSION,
+    getWorkspaceID,
+    aggregateRecords,
+    computeTtft,
+    computeTps,
+    cacheHitRate
   };
 })();
