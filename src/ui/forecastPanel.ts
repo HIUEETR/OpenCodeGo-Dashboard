@@ -218,6 +218,13 @@ export class ForecastPanel {
     this.tooltip = tooltip;
   }
 
+  setBusy(busy: boolean, language: Language): void {
+    this.root.setAttribute('aria-busy', String(busy));
+    this.root.toggleAttribute('data-refreshing', busy);
+    if (busy) this.root.setAttribute('aria-label', t(language, 'forecast.refreshing'));
+    else this.root.removeAttribute('aria-label');
+  }
+
   renderSummaryCards(result: QuotaForecastResult, selectedModel: string, language: Language): void {
     this.result = result;
     this.selectedModel = selectedModel;

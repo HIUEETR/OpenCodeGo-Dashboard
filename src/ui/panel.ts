@@ -228,6 +228,7 @@ export class Panel {
   private forecastStatusFetchedAt = 0;
   private forecastStatusError = '';
   private forecastLoading = false;
+  private forecastRefreshing = false;
   private forecastError = '';
   private forecastLoadSeq = 0;
   private forecastStale = true;
@@ -965,8 +966,15 @@ export class Panel {
     this.forecastStatusFetchedAt = 0;
     this.forecastStatusError = '';
     this.forecastLoading = false;
+    this.forecastRefreshing = false;
     this.forecastError = '';
     this.forecastStale = true;
+    this.setForecastBusy(false);
+  }
+
+  private setForecastBusy(busy: boolean): void {
+    this.forecastPanel?.setBusy(busy, this.language);
+    this.overviewForecastPanel?.setBusy(busy, this.language);
   }
 
   private async loadForecastStatus(force: boolean): Promise<GoQuotaStatus | undefined> {
@@ -999,16 +1007,19 @@ export class Panel {
 
   private async loadForecast(force: boolean): Promise<void> {
     if (!this.open || !this.experimentalForecast || !this.workspaceID) return;
-    if (this.forecastLoading) return;
+    if (this.forecastLoading || this.forecastRefreshing) return;
     if (!force && !this.forecastStale && this.forecastResult) {
       this.renderForecast();
       return;
     }
     const workspaceID = this.workspaceID;
     const loadSeq = ++this.forecastLoadSeq;
-    this.forecastLoading = true;
+    const keepPrevious = Boolean(this.forecastResult && this.forecastRecords?.length);
+    this.forecastLoading = !keepPrevious;
+    this.forecastRefreshing = keepPrevious;
     this.forecastError = '';
-    this.renderForecast();
+    if (keepPrevious) this.setForecastBusy(true);
+    else this.renderForecast();
     try {
       const [pricing, records, status] = await Promise.all([
         this.ensurePricing(),
@@ -1033,12 +1044,19 @@ export class Panel {
       this.logger.info('log.forecastUpdated', { n: this.forecastResult.models.length });
     } catch (error) {
       if (loadSeq === this.forecastLoadSeq) {
-        this.forecastError = error instanceof Error ? error.message : String(error);
-        this.logger.warn('log.forecastFailed', { error: this.forecastError });
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn('log.forecastFailed', { error: message });
+        if (keepPrevious) {
+          this.showToast('forecast.refreshFailed', { error: message });
+        } else {
+          this.forecastError = message;
+        }
       }
     } finally {
       if (loadSeq === this.forecastLoadSeq) {
         this.forecastLoading = false;
+        this.forecastRefreshing = false;
+        this.setForecastBusy(false);
         this.renderForecast();
       }
     }
@@ -1247,7 +1265,7 @@ export class Panel {
     select.value = values.includes(selected) ? selected : '';
     if (!select.value) setter('');
   }
-  private render(): void {
+  private render(preserveForecast = false): void {
     if (!this.panel) return;
     this.rangeError = this.customRangeError();
     this.renderChrome();
@@ -1256,11 +1274,11 @@ export class Panel {
     this.analysis = aggregateRecords(this.records, this.filters, this.range.from, this.range.to, this.range.bucketMs);
     this.renderStatus();
     this.renderError();
-    this.renderOverview();
+    this.renderOverview(preserveForecast);
     this.renderCharts();
     this.renderRequests();
     if (this.activeTab === 'data') this.renderData();
-    if (this.activeTab === 'forecast') this.renderForecast();
+    if (this.activeTab === 'forecast' && !preserveForecast) this.renderForecast();
   }
 
   private renderStatus(): void {
@@ -1301,7 +1319,7 @@ export class Panel {
     this.errorBox.textContent = message;
   }
 
-  private renderOverview(): void {
+  private renderOverview(preserveForecast = false): void {
     if (!this.cards || !this.analysis) return;
     const summary = this.analysis.summary;
     this.cards.replaceChildren();
@@ -1335,7 +1353,7 @@ export class Panel {
     if (this.overviewLegacyNote) {
       this.overviewLegacyNote.style.display = this.records.some((record) => record.legacy) ? '' : 'none';
     }
-    this.renderOverviewForecast();
+    if (!preserveForecast) this.renderOverviewForecast();
     this.renderModelTable(this.overviewModels, this.analysis.models);
   }
 
@@ -1890,14 +1908,14 @@ export class Panel {
     }
   }
 
-  private async reloadRecords(): Promise<void> {
+  private async reloadRecords(preserveForecast = false): Promise<void> {
     const loadSeq = ++this.rangeLoadSeq;
     const workspaceID = this.workspaceID;
     if (!workspaceID) {
       this.records = [];
       this.totalRecordCount = 0;
       this.syncState = undefined;
-      this.render();
+      this.render(preserveForecast);
       return;
     }
     const range = this.currentRange();
@@ -1910,7 +1928,7 @@ export class Panel {
     this.records = records;
     this.totalRecordCount = totalRecordCount;
     this.syncState = syncState;
-    this.render();
+    this.render(preserveForecast);
     void this.ensurePricing();
   }
 
@@ -1948,7 +1966,7 @@ export class Panel {
           this.renderStatus();
         },
       });
-      await this.reloadRecords();
+      await this.reloadRecords(true);
       this.forecastStale = true;
       if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
       this.logger.info(result.cacheHit ? 'log.syncCached' : 'log.syncComplete', {
@@ -1964,7 +1982,7 @@ export class Panel {
         this.setError(error);
         this.logger.error('log.error', { error: error instanceof Error ? error.message : String(error) });
       }
-      await this.reloadRecords();
+      await this.reloadRecords(true);
       this.forecastStale = true;
       if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
     } finally {
@@ -2004,7 +2022,7 @@ export class Panel {
     this.forecastStale = true;
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
-      void this.reloadRecords();
+      void this.reloadRecords(true);
       if (this.open && (this.activeTab === 'forecast' || this.activeTab === 'overview')) void this.loadForecast(false);
     }, 300);
   }

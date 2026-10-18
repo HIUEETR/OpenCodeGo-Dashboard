@@ -99,7 +99,7 @@ def api_record(
     }
 
 
-def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, status_seen=None, status_unauthorized=False, zero_token_model=None):
+def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, status_seen=None, status_unauthorized=False, zero_token_model=None, log_delay_ms=0):
     limited = {"done": False}
 
     def handler(route):
@@ -185,6 +185,8 @@ def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=F
             return
         if "/console/api/request-logs" in url:
             requests_seen.append({"url": url, "headers": request.headers})
+            if log_delay_ms:
+                time.sleep(log_delay_ms / 1000)
             if unauthorized:
                 route.fulfill(
                     status=401,
@@ -816,6 +818,78 @@ def test_forecast_beta_toggle():
         browser.close()
 
 
+def test_forecast_refresh_keeps_view():
+    requests_seen = []
+    status_seen = []
+    errors = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        install_routes(page, requests_seen, status_seen=status_seen, log_delay_ms=350)
+        open_fixture(context, page)
+
+        sync_button = page.get_by_text("立即同步", exact=True).first
+        sync_button.click()
+        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator('[data-tab="data"]').click()
+        page.locator('.ocgo-experimental-row input').check()
+        page.locator('[data-tab="forecast"]').click()
+        page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
+        page.locator('[data-view="forecast"] .ocgo-forecast-window-btn').filter(has_text="每周").click()
+        assert page.locator('[data-view="forecast"] .ocgo-forecast-window-btn.ocgo-active').inner_text() == "每周"
+
+        page.evaluate("""() => {
+          const view = document.getElementById('ocgo-lens-host').shadowRoot.querySelector('[data-view="forecast"]');
+          window.__forecastRefreshSnapshots = [];
+          const capture = () => {
+            const root = view.querySelector('.ocgo-forecast-view');
+            window.__forecastRefreshSnapshots.push({
+              cards: view.querySelectorAll('.ocgo-forecast-card').length,
+              charts: view.querySelectorAll('svg.ocgo-forecast-chart').length,
+              busy: root?.getAttribute('aria-busy') || 'false',
+              text: view.innerText,
+            });
+          };
+          capture();
+          window.__forecastRefreshObserver = new MutationObserver(capture);
+          window.__forecastRefreshObserver.observe(view, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ['aria-busy', 'data-refreshing'],
+          });
+        }""")
+
+        sync_button = page.get_by_text("立即同步", exact=True).first
+        sync_button.click()
+        page.wait_for_function(
+            "() => [...document.getElementById('ocgo-lens-host').shadowRoot.querySelectorAll('.ocgo-sync-btn')].some((button) => button.textContent?.trim() === '停止')",
+            timeout=5000,
+        )
+        page.wait_for_function(
+            "() => !document.getElementById('ocgo-lens-host').shadowRoot.querySelector('[data-view=\"forecast\"] .ocgo-forecast-view[data-refreshing]')",
+            timeout=15000,
+        )
+        page.wait_for_function(
+            "() => window.__forecastRefreshSnapshots.some((item) => item.busy === 'true')",
+            timeout=5000,
+        )
+        page.wait_for_timeout(150)
+
+        snapshots = page.evaluate("window.__forecastRefreshSnapshots")
+        assert snapshots, snapshots
+        assert all(item["cards"] == 4 for item in snapshots), snapshots
+        assert all(item["charts"] == 1 for item in snapshots), snapshots
+        assert all("正在计算用量预测" not in item["text"] for item in snapshots), snapshots
+        assert page.locator('[data-view="forecast"] .ocgo-forecast-window-btn.ocgo-active').inner_text() == "每周"
+        assert not errors, errors
+        browser.close()
+
+
+
 def test_forecast_status_fallback():
     requests_seen = []
     status_seen = []
@@ -846,6 +920,7 @@ if __name__ == "__main__":
     test_overview_cache_write_card()
     test_model_tables_hide_zero_token_models()
     test_forecast_beta_toggle()
+    test_forecast_refresh_keeps_view()
     test_forecast_status_fallback()
     test_fab_and_resize_interactions()
     test_workspace_route_change()
