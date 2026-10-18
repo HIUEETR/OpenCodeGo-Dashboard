@@ -591,6 +591,11 @@
     "forecast.chartP50": "预测中位数（p50）",
     "forecast.chartP10": "预测下界（p10）",
     "forecast.chartP90": "预测上界（p90）",
+    "forecast.legendHistory": "历史累计",
+    "forecast.legendForecast": "预测 p50",
+    "forecast.legendBand": "p10–p90 区间",
+    "forecast.legendNow": "当前时刻",
+    "forecast.legendReset": "额度重置（5h / 周 / 月）",
     "forecast.tableTitle": "模型额度明细",
     "forecast.table.model": "模型",
     "forecast.table.monthlyLimit": "月额度",
@@ -643,6 +648,12 @@
     "forecast.infoForecastDesc": "p50 中位预测，即最常见的预计消耗",
     "forecast.infoBand": "置信区间",
     "forecast.infoBandDesc": "p10–p90 阴影表示预测的不确定范围",
+    "forecast.infoMarkers": "时间虚线",
+    "forecast.infoMarkersDesc": "标记当前时刻，以及图表时间范围内的 5 小时、周和月额度重置边界",
+    "forecast.markerNow": "现在",
+    "forecast.markerFiveHour": "5h 重置",
+    "forecast.markerWeek": "周重置",
+    "forecast.markerMonth": "月重置",
     "forecast.infoMethod": "预测方法",
     "forecast.infoMethodDesc": "短期使用 15/60 分钟 EWMA，并叠加同星期时段周期和受限趋势",
     "forecast.infoFooter": "24h 使用月额度作为分母；预测仅供估算，不改变官方额度。",
@@ -893,6 +904,11 @@
     "forecast.chartP50": "Forecast median (p50)",
     "forecast.chartP10": "Forecast lower bound (p10)",
     "forecast.chartP90": "Forecast upper bound (p90)",
+    "forecast.legendHistory": "Historical cumulative",
+    "forecast.legendForecast": "Forecast p50",
+    "forecast.legendBand": "p10–p90 range",
+    "forecast.legendNow": "Current time",
+    "forecast.legendReset": "Quota reset (5h / weekly / monthly)",
     "forecast.tableTitle": "Model quota detail",
     "forecast.table.model": "Model",
     "forecast.table.monthlyLimit": "Monthly limit",
@@ -945,6 +961,12 @@
     "forecast.infoForecastDesc": "Median p50 projection for the rest of the window",
     "forecast.infoBand": "Confidence band",
     "forecast.infoBandDesc": "The p10–p90 shaded range shows forecast uncertainty",
+    "forecast.infoMarkers": "Time markers",
+    "forecast.infoMarkersDesc": "Mark the current time and any 5-hour, weekly, or monthly quota reset boundaries within the chart range",
+    "forecast.markerNow": "Now",
+    "forecast.markerFiveHour": "5h reset",
+    "forecast.markerWeek": "Week reset",
+    "forecast.markerMonth": "Month reset",
     "forecast.infoMethod": "Method",
     "forecast.infoMethodDesc": "Short-term 15/60 minute EWMA with weekday-hour seasonality and a capped trend",
     "forecast.infoFooter": "The 24h view uses the monthly quota as its denominator. Forecasts are estimates and never change official quota.",
@@ -2985,29 +3007,29 @@
       polygon.classList.add("ocgo-forecast-band");
       svg.appendChild(polygon);
     }
-    const now = Date.now();
-    if (now >= xMin && now <= xMax) {
-      const nowLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      nowLine.setAttribute("x1", String(x(now)));
-      nowLine.setAttribute("x2", String(x(now)));
-      nowLine.setAttribute("y1", String(margin.top));
-      nowLine.setAttribute("y2", String(margin.top + height));
-      nowLine.classList.add("ocgo-forecast-now");
-      svg.appendChild(nowLine);
-    }
-    const boundaries = [
-      model.windows.fiveHour.resetsAt,
-      model.windows.week.resetsAt,
-      model.windows.month.resetsAt
-    ].filter((value) => value !== void 0 && value >= xMin && value <= xMax);
-    for (const boundary of boundaries) {
+    const addMarker = (at, label, isNow) => {
+      const markerX = x(at);
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", String(x(boundary)));
-      line.setAttribute("x2", String(x(boundary)));
+      line.setAttribute("x1", String(markerX));
+      line.setAttribute("x2", String(markerX));
       line.setAttribute("y1", String(margin.top));
       line.setAttribute("y2", String(margin.top + height));
-      line.classList.add("ocgo-forecast-boundary");
+      line.classList.add(isNow ? "ocgo-forecast-now" : "ocgo-forecast-boundary");
+      line.setAttribute("data-marker", isNow ? "now" : "reset");
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${label} · ${formatDateTime(at)}`;
+      line.appendChild(title);
       svg.appendChild(line);
+    };
+    const now = Date.now();
+    if (now >= xMin && now <= xMax) addMarker(now, t(language, "forecast.markerNow"), true);
+    const resetMarkers = [
+      [model.windows.fiveHour.resetsAt, "forecast.markerFiveHour"],
+      [model.windows.week.resetsAt, "forecast.markerWeek"],
+      [model.windows.month.resetsAt, "forecast.markerMonth"]
+    ];
+    for (const [at, key] of resetMarkers) {
+      if (at !== void 0 && at >= xMin && at <= xMax) addMarker(at, t(language, key), false);
     }
     const axisStart = document.createElementNS("http://www.w3.org/2000/svg", "text");
     axisStart.setAttribute("x", String(margin.left));
@@ -3179,8 +3201,26 @@
       head.appendChild(controls);
       const chart = buildChart2(this.language, model.windows[this.windowKey], model, this.windowKey);
       this.bindChartHover(chart, model, model.windows[this.windowKey]);
-      section.append(head, chart);
+      section.append(head, chart, this.renderChartLegend());
       return section;
+    }
+    renderChartLegend() {
+      const legend = node("div", "ocgo-forecast-chart-legend");
+      const item = (label, swatchClass) => {
+        const wrapper = node("span", "ocgo-forecast-legend-item");
+        const swatch = node("span", `ocgo-forecast-legend-swatch ${swatchClass}`);
+        swatch.setAttribute("aria-hidden", "true");
+        wrapper.append(swatch, node("span", "", label));
+        return wrapper;
+      };
+      legend.append(
+        item(t(this.language, "forecast.legendHistory"), "ocgo-forecast-legend-actual"),
+        item(t(this.language, "forecast.legendForecast"), "ocgo-forecast-legend-p50"),
+        item(t(this.language, "forecast.legendBand"), "ocgo-forecast-legend-band"),
+        item(t(this.language, "forecast.legendNow"), "ocgo-forecast-legend-now"),
+        item(t(this.language, "forecast.legendReset"), "ocgo-forecast-legend-reset")
+      );
+      return legend;
     }
     chartValue(value, window2) {
       return window2.limitUsd === null || window2.limitUsd <= 0 ? formatUsd(value) : formatPercent(value / window2.limitUsd);
@@ -3420,6 +3460,7 @@
             [t(this.language, "forecast.infoHistory"), t(this.language, "forecast.infoHistoryDesc")],
             [t(this.language, "forecast.infoForecast"), t(this.language, "forecast.infoForecastDesc")],
             [t(this.language, "forecast.infoBand"), t(this.language, "forecast.infoBandDesc")],
+            [t(this.language, "forecast.infoMarkers"), t(this.language, "forecast.infoMarkersDesc")],
             [t(this.language, "forecast.infoMethod"), t(this.language, "forecast.infoMethodDesc")]
           ],
           this.panel,
@@ -3738,6 +3779,13 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-chart { width: 100%; height: 250px; display: block; }
 .ocgo-forecast-gridline { stroke: rgba(255,255,255,.07); stroke-width: 1; }
 .ocgo-forecast-axis-label { fill: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-forecast-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 7px 2px 0; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
+.ocgo-forecast-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.ocgo-forecast-legend-swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--accent); }
+.ocgo-forecast-legend-p50 { border-top-style: dashed; border-top-color: var(--violet); }
+.ocgo-forecast-legend-band { width: 18px; height: 8px; border: 0; border-radius: 2px; background: rgba(158,153,247,.18); }
+.ocgo-forecast-legend-now { border-top-style: dashed; border-top-color: rgba(250,250,250,.65); }
+.ocgo-forecast-legend-reset { border-top-style: dashed; border-top-color: rgba(242,207,118,.75); }
 .ocgo-forecast-actual { fill: none; stroke: var(--accent); stroke-width: 2; }
 .ocgo-forecast-p50 { fill: none; stroke: var(--violet); stroke-width: 2; stroke-dasharray: 5 4; }
 .ocgo-forecast-band { fill: rgba(158,153,247,.13); stroke: none; }

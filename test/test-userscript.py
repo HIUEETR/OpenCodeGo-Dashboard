@@ -719,10 +719,10 @@ def test_forecast_beta_toggle():
         assert overview_forecast.locator(".ocgo-forecast-card").count() == 4
         overview_table = page.locator('[data-view="overview"] tbody').first
         overview_table.wait_for(state="visible", timeout=5000)
-        forecast_box = overview_forecast.bounding_box()
-        table_box = overview_table.bounding_box()
-        assert forecast_box is not None and table_box is not None
-        assert forecast_box["y"] < table_box["y"]
+        assert overview_forecast.evaluate("""element => {
+            const table = element.nextElementSibling?.querySelector('tbody');
+            return Boolean(table) && element.getBoundingClientRect().top < table.getBoundingClientRect().top;
+        }""")
 
         forecast_tab.click()
         cards = page.locator('[data-view="forecast"] .ocgo-forecast-card')
@@ -764,8 +764,15 @@ def test_forecast_beta_toggle():
         info_text = tooltip.inner_text()
         assert "如何阅读额度预测" in info_text
         assert "EWMA" in info_text
+        assert "时间虚线" in info_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
+        legend_text = page.locator('[data-view="forecast"] .ocgo-forecast-chart-legend').inner_text()
+        assert "历史累计" in legend_text
+        assert "预测 p50" in legend_text
+        assert "p10–p90 区间" in legend_text
+        assert "当前时刻" in legend_text
+        assert "额度重置（5h / 周 / 月）" in legend_text
         tightest = page.locator('[data-view="forecast"] .ocgo-forecast-help')
         assert tightest.is_visible()
         tightest.hover()

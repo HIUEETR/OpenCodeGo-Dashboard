@@ -156,30 +156,29 @@ function buildChart(
     svg.appendChild(polygon);
   }
 
-  const now = Date.now();
-  if (now >= xMin && now <= xMax) {
-    const nowLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    nowLine.setAttribute('x1', String(x(now)));
-    nowLine.setAttribute('x2', String(x(now)));
-    nowLine.setAttribute('y1', String(margin.top));
-    nowLine.setAttribute('y2', String(margin.top + height));
-    nowLine.classList.add('ocgo-forecast-now');
-    svg.appendChild(nowLine);
-  }
-
-  const boundaries = [
-    model.windows.fiveHour.resetsAt,
-    model.windows.week.resetsAt,
-    model.windows.month.resetsAt,
-  ].filter((value): value is number => value !== undefined && value >= xMin && value <= xMax);
-  for (const boundary of boundaries) {
+  const addMarker = (at: number, label: string, isNow: boolean) => {
+    const markerX = x(at);
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', String(x(boundary)));
-    line.setAttribute('x2', String(x(boundary)));
+    line.setAttribute('x1', String(markerX));
+    line.setAttribute('x2', String(markerX));
     line.setAttribute('y1', String(margin.top));
     line.setAttribute('y2', String(margin.top + height));
-    line.classList.add('ocgo-forecast-boundary');
+    line.classList.add(isNow ? 'ocgo-forecast-now' : 'ocgo-forecast-boundary');
+    line.setAttribute('data-marker', isNow ? 'now' : 'reset');
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = `${label} · ${formatDateTime(at)}`;
+    line.appendChild(title);
     svg.appendChild(line);
+  };
+  const now = Date.now();
+  if (now >= xMin && now <= xMax) addMarker(now, t(language, 'forecast.markerNow'), true);
+  const resetMarkers = [
+    [model.windows.fiveHour.resetsAt, 'forecast.markerFiveHour'],
+    [model.windows.week.resetsAt, 'forecast.markerWeek'],
+    [model.windows.month.resetsAt, 'forecast.markerMonth'],
+  ] as const;
+  for (const [at, key] of resetMarkers) {
+    if (at !== undefined && at >= xMin && at <= xMax) addMarker(at, t(language, key), false);
   }
 
   const axisStart = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -376,8 +375,27 @@ export class ForecastPanel {
     head.appendChild(controls);
     const chart = buildChart(this.language, model.windows[this.windowKey], model, this.windowKey);
     this.bindChartHover(chart, model, model.windows[this.windowKey]);
-    section.append(head, chart);
+    section.append(head, chart, this.renderChartLegend());
     return section;
+  }
+
+  private renderChartLegend(): HTMLElement {
+    const legend = node('div', 'ocgo-forecast-chart-legend');
+    const item = (label: string, swatchClass: string) => {
+      const wrapper = node('span', 'ocgo-forecast-legend-item');
+      const swatch = node('span', `ocgo-forecast-legend-swatch ${swatchClass}`);
+      swatch.setAttribute('aria-hidden', 'true');
+      wrapper.append(swatch, node('span', '', label));
+      return wrapper;
+    };
+    legend.append(
+      item(t(this.language, 'forecast.legendHistory'), 'ocgo-forecast-legend-actual'),
+      item(t(this.language, 'forecast.legendForecast'), 'ocgo-forecast-legend-p50'),
+      item(t(this.language, 'forecast.legendBand'), 'ocgo-forecast-legend-band'),
+      item(t(this.language, 'forecast.legendNow'), 'ocgo-forecast-legend-now'),
+      item(t(this.language, 'forecast.legendReset'), 'ocgo-forecast-legend-reset'),
+    );
+    return legend;
   }
 
 
@@ -633,6 +651,7 @@ export class ForecastPanel {
           [t(this.language, 'forecast.infoHistory'), t(this.language, 'forecast.infoHistoryDesc')],
           [t(this.language, 'forecast.infoForecast'), t(this.language, 'forecast.infoForecastDesc')],
           [t(this.language, 'forecast.infoBand'), t(this.language, 'forecast.infoBandDesc')],
+          [t(this.language, 'forecast.infoMarkers'), t(this.language, 'forecast.infoMarkersDesc')],
           [t(this.language, 'forecast.infoMethod'), t(this.language, 'forecast.infoMethodDesc')],
         ],
         this.panel,

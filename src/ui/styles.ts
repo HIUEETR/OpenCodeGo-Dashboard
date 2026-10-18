@@ -254,6 +254,13 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
 .ocgo-forecast-chart { width: 100%; height: 250px; display: block; }
 .ocgo-forecast-gridline { stroke: rgba(255,255,255,.07); stroke-width: 1; }
 .ocgo-forecast-axis-label { fill: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ocgo-forecast-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 7px 2px 0; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
+.ocgo-forecast-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.ocgo-forecast-legend-swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--accent); }
+.ocgo-forecast-legend-p50 { border-top-style: dashed; border-top-color: var(--violet); }
+.ocgo-forecast-legend-band { width: 18px; height: 8px; border: 0; border-radius: 2px; background: rgba(158,153,247,.18); }
+.ocgo-forecast-legend-now { border-top-style: dashed; border-top-color: rgba(250,250,250,.65); }
+.ocgo-forecast-legend-reset { border-top-style: dashed; border-top-color: rgba(242,207,118,.75); }
 .ocgo-forecast-actual { fill: none; stroke: var(--accent); stroke-width: 2; }
 .ocgo-forecast-p50 { fill: none; stroke: var(--violet); stroke-width: 2; stroke-dasharray: 5 4; }
 .ocgo-forecast-band { fill: rgba(158,153,247,.13); stroke: none; }
