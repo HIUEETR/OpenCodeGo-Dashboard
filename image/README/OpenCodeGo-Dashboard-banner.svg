@@ -113,19 +113,15 @@
     </g>
   </g>
 
-  <!-- left logo mark: abstract OpenCode-inspired terminal knot -->
+  <!-- left logo mark: current launcher bar-chart icon -->
   <g transform="translate(82 88)">
-    <circle cx="82" cy="82" r="70" fill="#fff" fill-opacity=".025"/>
-    <circle cx="82" cy="82" r="70" fill="none" stroke="#fff" stroke-opacity=".08"/>
-    <path d="M48 67 L77 38 L106 67 L77 96 Z"
-          fill="none" stroke="url(#accent)" stroke-width="9" stroke-linejoin="round">
-      <animateTransform attributeName="transform" type="rotate"
-                        from="0 77 67" to="360 77 67" dur="18s" repeatCount="indefinite"/>
-    </path>
-    <path d="M58 91 L87 62 L116 91"
-          fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="5" stroke-linecap="round">
-      <animate attributeName="stroke-opacity" values=".18;.55;.18" dur="3s" repeatCount="indefinite"/>
-    </path>
+    <circle cx="82" cy="82" r="70" fill="#080808" stroke="#ffffff" stroke-opacity=".20"/>
+    <circle cx="82" cy="82" r="59" fill="none" stroke="#ffffff" stroke-opacity=".045"/>
+    <g transform="translate(82 82) scale(3.2) translate(-16 -16)"
+       fill="none" stroke="#fafafa" stroke-linecap="round">
+      <path d="M6 23V9m6 14V13m6 10V7m6 16V11" stroke-width="2.2"/>
+      <path d="M4 27h24" stroke-opacity=".35" stroke-width="1.4"/>
+    </g>
   </g>
 
   <!-- title -->
