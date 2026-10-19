@@ -946,6 +946,12 @@ def capture_readme_screenshots():
                 path=str(output_dir / f'overview.{suffix}.png'),
             )
 
+            page.locator('[data-tab="charts"]').click()
+            page.wait_for_timeout(250)
+            page.locator('#ocgo-lens-panel').screenshot(
+                path=str(output_dir / f'charts.{suffix}.png'),
+            )
+
             page.locator('[data-tab="forecast"]').click()
             page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
             page.wait_for_timeout(250)

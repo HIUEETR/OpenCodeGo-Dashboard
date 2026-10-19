@@ -10,9 +10,17 @@ OpenCode Performance Lens adds a floating observability dashboard to [OpenCode C
 
 ## Screenshots
 
-| Overview | Usage forecast |
-| --- | --- |
-| ![Overview](image/README/overview.en.png) | ![Usage forecast](image/README/usage-forecast.en.png) |
+### Overview
+
+![Overview](image/README/overview.en.png)
+
+### Charts
+
+![Charts](image/README/charts.en.png)
+
+### Usage forecast
+
+![Usage forecast](image/README/usage-forecast.en.png)
 
 ## Features
 
@@ -25,7 +33,7 @@ OpenCode Performance Lens adds a floating observability dashboard to [OpenCode C
 - The Sync & Data tab shows cached model pricing, Peak / Off-Peak periods, context tiers, storage usage, diagnostics, and export controls.
 - Local IndexedDB archive keeps compact request metrics beyond the Console's 30-day log retention window.
 - Optional Beta usage forecast, disabled by default. When enabled, the Overview gains a summary and a Usage forecast tab appears with 5-hour, next-24-hours, weekly, and monthly cards.
-- Usage forecast limits are per model: monthly limit `M`, weekly `M / 2`, and 5-hour `M / 5`. The next 24 hours is a forecast horizon, not a limit window. See the [implementation guide](docs/usage-forecast-implementation.zh-CN.md) and [design notes](docs/usage-forecast-design.zh-CN.md).
+- Usage forecast limits are per model: monthly limit `M`, weekly `M / 2`, and 5-hour `M / 5`. The next 24 hours is a forecast horizon, not a limit window.
 - Chinese or English UI, remembered filters, range, tab, language, forecast toggle, panel geometry, launcher position, and chart zoom.
 - The chart launcher toggles and can be dragged. The header moves the panel, eight edge handles resize it, and `Escape` or an outside click closes it.
 
@@ -109,15 +117,12 @@ npm run test:e2e
 - `npm run test:watch`: runs Vitest in watch mode.
 - `npm run check`: typecheck plus unit tests.
 - `npm run test:e2e`: builds and runs Playwright against the local Console fixture.
-- `npm run capture:readme`: regenerates the four README screenshots from the same fixture.
+- `npm run capture:readme`: regenerates the six README screenshots from the same fixture.
 
 After a local rebuild, re-import the generated userscript in the userscript manager.
 
 ## References
 
-- [Terminology](docs/terminology.zh-CN.md)
-- [Usage forecast design](docs/usage-forecast-design.zh-CN.md)
-- [Usage forecast implementation and calculations](docs/usage-forecast-implementation.zh-CN.md)
 - [OpenCode Console documentation](https://opencode.ai/v2/docs/console/)
 - [OpenCode Go usage limits](https://opencode.ai/v2/docs/console/go/)
 

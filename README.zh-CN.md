@@ -10,9 +10,17 @@ OpenCode 性能观测会在 [OpenCode Console](https://opencode.ai/console/) 上
 
 ## 界面截图
 
-| 概览 | 用量预测 |
-| --- | --- |
-| ![概览](image/README/overview.zh-CN.png) | ![用量预测](image/README/usage-forecast.zh-CN.png) |
+### 概览
+
+![概览](image/README/overview.zh-CN.png)
+
+### 趋势图
+
+![趋势图](image/README/charts.zh-CN.png)
+
+### 用量预测
+
+![用量预测](image/README/usage-forecast.zh-CN.png)
 
 ## 功能
 
@@ -25,7 +33,7 @@ OpenCode 性能观测会在 [OpenCode Console](https://opencode.ai/console/) 上
 - “同步与数据”页展示模型价格缓存、高峰 / 空闲时段、上下文档位、浏览器存储、诊断日志和导出操作。
 - 本地 IndexedDB 归档长期保存精简后的请求指标，不受 Console 30 天日志保留期限制。
 - 可选 Beta 用量预测默认关闭。开启后概览增加预测摘要，并出现“用量预测”标签，包含 5 小时、未来 24 小时、每周和每月四张卡。
-- 用量预测按模型独立计算：每月上限为 `M`，每周上限为 `M / 2`，5 小时上限为 `M / 5`。未来 24 小时是预测跨度，不是限额窗口。详见[实现说明](docs/usage-forecast-implementation.zh-CN.md)和[设计文档](docs/usage-forecast-design.zh-CN.md)。
+- 用量预测按模型独立计算：每月上限为 `M`，每周上限为 `M / 2`，5 小时上限为 `M / 5`。未来 24 小时是预测跨度，不是限额窗口。
 - 支持中文和英文界面，并记忆筛选、时间范围、当前标签、语言、预测开关、面板尺寸、按钮位置和图表缩放。
 - 图表按钮可开关面板并拖动；标题栏移动面板，八条边缘手柄调整尺寸；按 `Escape` 或点击面板外区域关闭。
 
@@ -109,15 +117,12 @@ npm run test:e2e
 - `npm run test:watch`：以监听模式运行 Vitest。
 - `npm run check`：类型检查加单元测试。
 - `npm run test:e2e`：构建后用 Playwright 运行本地 Console 测试场景。
-- `npm run capture:readme`：使用同一套本地 fixture 重新生成四张 README 截图。
+- `npm run capture:readme`：使用同一套本地 fixture 重新生成六张 README 截图。
 
 本地重新构建后，需要在 userscript 管理器中重新导入生成的脚本。
 
 ## 参考
 
-- [术语规范](docs/terminology.zh-CN.md)
-- [用量预测设计](docs/usage-forecast-design.zh-CN.md)
-- [用量预测实现说明与计算方式](docs/usage-forecast-implementation.zh-CN.md)
 - [OpenCode Console 文档](https://opencode.ai/v2/docs/console/)
 - [OpenCode Go 用量限制](https://opencode.ai/v2/docs/console/go/)
 
