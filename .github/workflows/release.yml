@@ -55,9 +55,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: OpenCodeGo Dashboard Assistant v${{ steps.version.outputs.VERSION }}
           files: opencodego-dashboard.user.js
           body: |
-            ## OpenCode Performance Lens v${{ steps.version.outputs.VERSION }}
+            ## OpenCodeGo Dashboard Assistant v${{ steps.version.outputs.VERSION }}
 
             ### Installation
             [Install or update the userscript](https://raw.githubusercontent.com/HIUEETR/OpenCodeGo-Dashboard/main/opencodego-dashboard.user.js)

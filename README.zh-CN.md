@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCode 性能观测 Banner" />
+  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo 仪表盘助手 Banner" />
 </p>
 
-# OpenCode 性能观测（油猴脚本）v1.2.0
+# OpenCodeGo 仪表盘助手（油猴脚本）v1.2.0
 
 中文 | **[English](README.md)**
 
-OpenCode 性能观测会在 [OpenCode Console](https://opencode.ai/console/) 上增加一块悬浮仪表盘，集中展示请求性能、本地归档、OpenCode Go 价格和可选的使用量预测。账户、工作区、账单和权威用量仍以 OpenCode Console 为准。
+OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/) 上增加一块悬浮仪表盘，集中展示请求性能、本地归档、OpenCode Go 价格和可选的使用量预测。账户、工作区、账单和权威用量仍以 OpenCode Console 为准。
 
 ## 界面截图
 

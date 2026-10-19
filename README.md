@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCode Performance Lens Banner" />
+  <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo Dashboard Assistant Banner" />
 </p>
 
-# OpenCode Performance Lens (Userscript) v1.2.0
+# OpenCodeGo Dashboard Assistant (Userscript) v1.2.0
 
 **[中文](README.zh-CN.md)** | English
 
-OpenCode Performance Lens adds a floating observability dashboard to [OpenCode Console](https://opencode.ai/console/). It combines request performance, local retention, OpenCode Go pricing, and an optional usage forecast. The official Console remains responsible for account, workspace, billing, and authoritative usage views.
+OpenCodeGo Dashboard Assistant adds a floating observability dashboard to [OpenCode Console](https://opencode.ai/console/). It combines request performance, local retention, OpenCode Go pricing, and an optional usage forecast. The official Console remains responsible for account, workspace, billing, and authoritative usage views.
 
 ## Screenshots
 

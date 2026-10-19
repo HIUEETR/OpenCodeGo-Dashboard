@@ -1,4 +1,4 @@
-"""End-to-end tests for the OpenCode Performance Lens userscript.
+"""End-to-end tests for the OpenCodeGo Dashboard Assistant userscript.
 
 The console document and every API request are intercepted locally, so the test
 does not depend on a real OpenCode session or network access.

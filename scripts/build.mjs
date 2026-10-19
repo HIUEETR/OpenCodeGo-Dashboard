@@ -9,10 +9,12 @@ const outfile = path.join(root, 'opencodego-dashboard.user.js');
 const watch = process.argv.includes('--watch');
 
 const banner = `// ==UserScript==
-// @name         OpenCode 性能观测
+// @name         OpenCodeGo Dashboard Assistant
+// @name:zh-CN   OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
 // @version      ${pkg.version}
-// @description  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
+// @description  Request analytics, cache hit rate, TTFT, TPS, and usage forecast for the OpenCode Console, with a local archive.
+// @description:zh-CN  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
 // @match        https://opencode.ai/console/*
 // @run-at       document-start

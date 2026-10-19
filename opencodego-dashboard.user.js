@@ -1,8 +1,10 @@
 // ==UserScript==
-// @name         OpenCode 性能观测
+// @name         OpenCodeGo Dashboard Assistant
+// @name:zh-CN   OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
 // @version      1.2.0
-// @description  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
+// @description  Request analytics, cache hit rate, TTFT, TPS, and usage forecast for the OpenCode Console, with a local archive.
+// @description:zh-CN  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
 // @match        https://opencode.ai/console/*
 // @run-at       document-start
@@ -529,9 +531,9 @@
 
   // src/i18n.ts
   var zh = {
-    "app.title": "OpenCode 性能观测",
+    "app.title": "OpenCodeGo 仪表盘助手",
     "app.subtitle": "缓存命中率 · TTFT · TPS",
-    "app.open": "打开性能观测",
+    "app.open": "打开仪表盘助手",
     "app.close": "关闭",
     "app.language": "语言",
     "tabs.overview": "概览",
@@ -807,7 +809,7 @@
     "log.level.info": "信息",
     "log.level.warn": "警告",
     "log.level.error": "错误",
-    "log.mounted": "性能观测面板已加载",
+    "log.mounted": "仪表盘助手面板已加载",
     "log.migrated": "已迁移 {n} 条旧版用量记录",
     "log.migrationSkipped": "旧版数据迁移跳过：{error}",
     "log.principalSkipped": "用户信息加载跳过：{error}",
@@ -824,7 +826,7 @@
     "log.legacyCleanupSkipped": "旧版缓存清理跳过：{error}",
     "log.historyCleared": "本地历史已清空",
     "log.diagnosticsCopied": "诊断日志已复制",
-    "log.ready": "性能观测 v{version} 已就绪",
+    "log.ready": "仪表盘助手 v{version} 已就绪",
     "log.bootFailed": "启动失败：{error}",
     "log.captureFailed": "日志捕获失败：{error}",
     "log.pricingUpdated": "已缓存 {n} 个 OpenCode Go 模型价格",
@@ -848,9 +850,9 @@
     "forecast.refreshFailed": "用量预测刷新失败，继续显示上次结果：{error}"
   };
   var en = {
-    "app.title": "OpenCode Performance Lens",
+    "app.title": "OpenCodeGo Dashboard Assistant",
     "app.subtitle": "Cache hit rate · TTFT · TPS",
-    "app.open": "Open performance lens",
+    "app.open": "Open dashboard assistant",
     "app.close": "Close",
     "app.language": "Language",
     "tabs.overview": "Overview",
@@ -1126,7 +1128,7 @@
     "log.level.info": "Info",
     "log.level.warn": "Warning",
     "log.level.error": "Error",
-    "log.mounted": "Performance lens mounted",
+    "log.mounted": "Dashboard assistant mounted",
     "log.migrated": "Migrated {n} legacy usage records",
     "log.migrationSkipped": "Legacy migration skipped: {error}",
     "log.principalSkipped": "Principal lookup skipped: {error}",
@@ -1143,7 +1145,7 @@
     "log.legacyCleanupSkipped": "Legacy cache cleanup skipped: {error}",
     "log.historyCleared": "Local history cleared",
     "log.diagnosticsCopied": "Diagnostics copied",
-    "log.ready": "Performance lens v{version} ready",
+    "log.ready": "Dashboard assistant v{version} ready",
     "log.bootFailed": "Boot failed: {error}",
     "log.captureFailed": "Capture failed: {error}",
     "log.pricingUpdated": "Cached pricing for {n} OpenCode Go models",
@@ -5836,7 +5838,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       logger.info("log.ready", { version: VERSION });
     } catch (error) {
       logger.error("log.bootFailed", { error: error instanceof Error ? error.message : String(error) });
-      console.error("[OpenCode Performance Lens]", error);
+      console.error("[OpenCodeGo Dashboard Assistant]", error);
     }
   }
   if (document.readyState === "loading") {

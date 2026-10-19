@@ -54,7 +54,7 @@ function boot(): void {
     logger.info('log.ready', { version: VERSION });
   } catch (error) {
     logger.error('log.bootFailed', { error: error instanceof Error ? error.message : String(error) });
-    console.error('[OpenCode Performance Lens]', error);
+    console.error('[OpenCodeGo Dashboard Assistant]', error);
   }
 }
 

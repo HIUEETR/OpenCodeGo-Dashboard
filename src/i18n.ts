@@ -3,9 +3,9 @@ import type { Language, RangePreset } from './types';
 type Dictionary = Record<string, string>;
 
 const zh: Dictionary = {
-  'app.title': 'OpenCode 性能观测',
+  'app.title': 'OpenCodeGo 仪表盘助手',
   'app.subtitle': '缓存命中率 · TTFT · TPS',
-  'app.open': '打开性能观测',
+  'app.open': '打开仪表盘助手',
   'app.close': '关闭',
   'app.language': '语言',
   'tabs.overview': '概览',
@@ -281,7 +281,7 @@ const zh: Dictionary = {
   'log.level.info': '信息',
   'log.level.warn': '警告',
   'log.level.error': '错误',
-  'log.mounted': '性能观测面板已加载',
+  'log.mounted': '仪表盘助手面板已加载',
   'log.migrated': '已迁移 {n} 条旧版用量记录',
   'log.migrationSkipped': '旧版数据迁移跳过：{error}',
   'log.principalSkipped': '用户信息加载跳过：{error}',
@@ -298,7 +298,7 @@ const zh: Dictionary = {
   'log.legacyCleanupSkipped': '旧版缓存清理跳过：{error}',
   'log.historyCleared': '本地历史已清空',
   'log.diagnosticsCopied': '诊断日志已复制',
-  'log.ready': '性能观测 v{version} 已就绪',
+  'log.ready': '仪表盘助手 v{version} 已就绪',
   'log.bootFailed': '启动失败：{error}',
   'log.captureFailed': '日志捕获失败：{error}',
   'log.pricingUpdated': "已缓存 {n} 个 OpenCode Go 模型价格",
@@ -323,9 +323,9 @@ const zh: Dictionary = {
 };
 
 const en: Dictionary = {
-  'app.title': 'OpenCode Performance Lens',
+  'app.title': 'OpenCodeGo Dashboard Assistant',
   'app.subtitle': "Cache hit rate · TTFT · TPS",
-  'app.open': 'Open performance lens',
+  'app.open': 'Open dashboard assistant',
   'app.close': 'Close',
   'app.language': 'Language',
   'tabs.overview': 'Overview',
@@ -601,7 +601,7 @@ const en: Dictionary = {
   'log.level.info': 'Info',
   'log.level.warn': 'Warning',
   'log.level.error': 'Error',
-  'log.mounted': 'Performance lens mounted',
+  'log.mounted': 'Dashboard assistant mounted',
   'log.migrated': 'Migrated {n} legacy usage records',
   'log.migrationSkipped': 'Legacy migration skipped: {error}',
   'log.principalSkipped': 'Principal lookup skipped: {error}',
@@ -618,7 +618,7 @@ const en: Dictionary = {
   'log.legacyCleanupSkipped': 'Legacy cache cleanup skipped: {error}',
   'log.historyCleared': 'Local history cleared',
   'log.diagnosticsCopied': 'Diagnostics copied',
-  'log.ready': 'Performance lens v{version} ready',
+  'log.ready': 'Dashboard assistant v{version} ready',
   'log.bootFailed': 'Boot failed: {error}',
   'log.captureFailed': 'Capture failed: {error}',
   'log.pricingUpdated': "Cached pricing for {n} OpenCode Go models",
