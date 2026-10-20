@@ -1,6 +1,6 @@
 export type Language = 'zh' | 'en';
 export type Outcome = 'succeeded' | 'failed' | 'rejected' | 'cancelled';
-export type RangePreset = '1h' | '24h' | '7d' | '30d' | 'all' | 'custom';
+export type RangePreset = '1h' | '5h' | '24h' | '7d' | '30d' | 'all' | 'custom';
 export type TabKey = 'overview' | 'charts' | 'requests' | 'data' | 'forecast';
 export type GoPlan = 'go' | 'go-plus';
 

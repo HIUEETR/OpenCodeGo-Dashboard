@@ -127,7 +127,7 @@ function shortID(value: string): string {
   return value.length <= 22 ? value : `${value.slice(0, 10)}…${value.slice(-6)}`;
 }
 
-const RANGE_PRESETS: RangePreset[] = ['1h', '24h', '7d', '30d', 'all', 'custom'];
+const RANGE_PRESETS: RangePreset[] = ['1h', '5h', '24h', '7d', '30d', 'all', 'custom'];
 const MIN_PANEL_WIDTH = 680;
 const MIN_PANEL_HEIGHT = 480;
 const MIN_CHART_SCALE = 0.5;
@@ -238,7 +238,7 @@ export class Panel {
   constructor(logger: Logger) {
     this.logger = logger;
     this.language = loadJSON<Language>(LANGUAGE_STORAGE_KEY, detectLanguage());
-    this.rangePreset = loadJSON<RangePreset>(RANGE_STORAGE_KEY, '7d');
+    this.rangePreset = loadJSON<RangePreset>(RANGE_STORAGE_KEY, '5h');
     this.activeTab = loadJSON<TabKey>(TAB_STORAGE_KEY, 'overview');
     this.experimentalForecast = loadJSON<boolean>(EXPERIMENTAL_FORECAST_KEY, false);
     if (!this.experimentalForecast && this.activeTab === 'forecast') this.activeTab = 'data';

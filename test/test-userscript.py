@@ -246,8 +246,9 @@ def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=F
     page.route("https://opencode.ai/**", handler)
 
 
-def open_fixture(context, page, *, open_panel=True, language="zh"):
+def open_fixture(context, page, *, open_panel=True, language="zh", default_range="7d"):
     language_setup = "" if language is None else f"localStorage.setItem('ocgo-lens:language', JSON.stringify({json.dumps(language)}));"
+    range_setup = "" if default_range is None else f"localStorage.setItem('ocgo-lens:range', JSON.stringify({json.dumps(default_range)}));"
     context.add_init_script(
         f"""
         if (!localStorage.getItem('ocgo-lens:panelState')) {{
@@ -256,15 +257,36 @@ def open_fixture(context, page, *, open_panel=True, language="zh"):
         if (!localStorage.getItem('ocgo-lens:language')) {{
           {language_setup}
         }}
-        if (!localStorage.getItem('ocgo-lens:range')) {{
-          localStorage.setItem('ocgo-lens:range', JSON.stringify('7d'));
-        }}
+        {range_setup}
         """
     )
     context.add_init_script(USER_JS.read_text(encoding="utf-8"))
     page.goto(f"https://opencode.ai/console/{WORKSPACE}", wait_until="domcontentloaded")
     page.wait_for_selector("#ocgo-lens-host", state="attached", timeout=15000)
     page.wait_for_selector(".ocgo-panel", state="visible" if open_panel else "hidden", timeout=15000)
+
+
+def test_range_presets():
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        install_routes(page, [])
+        open_fixture(context, page, default_range=None)
+
+        range_select = page.get_by_label("范围")
+        assert range_select.input_value() == "5h"
+        assert range_select.locator("option").evaluate_all(
+            "options => options.map(option => option.value)"
+        ) == ["1h", "5h", "24h", "7d", "30d", "all", "custom"]
+        assert range_select.locator("option:checked").inner_text() == "近 5 小时"
+
+        range_select.select_option("7d")
+        assert page.evaluate("localStorage.getItem('ocgo-lens:range')") == '"7d"'
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector(".ocgo-panel", state="visible", timeout=15000)
+        assert page.get_by_label("范围").input_value() == "7d"
+        browser.close()
 
 
 def test_main_flow():
@@ -752,20 +774,26 @@ def test_forecast_beta_toggle():
         assert "$16.00" in (deepseek.locator("td").nth(2).get_attribute("title") or "")
         assert "$40.00" in (deepseek.locator("td").nth(3).get_attribute("title") or "")
         assert page.locator('[data-view="forecast"] svg.ocgo-forecast-chart').count() == 1
-        tooltip = page.locator('.ocgo-chart-tooltip')
-        cards.locator('.ocgo-card-value').first.hover()
-        tooltip.wait_for(state="visible", timeout=5000)
-        tooltip_text = tooltip.inner_text()
-        assert "预计（p50）" in tooltip_text
-        assert "到 5 小时重置时预计累计用量" in tooltip_text
-        page.mouse.move(5, 5)
-        tooltip.wait_for(state="hidden", timeout=5000)
-        cards.locator('.ocgo-card-value').nth(1).hover()
-        tooltip.wait_for(state="visible", timeout=5000)
-        tooltip_24h = tooltip.inner_text()
-        assert "未来 24 小时内" in tooltip_24h
-        assert "每月累计" in tooltip_24h
-        assert "预测终点" in tooltip_24h
+        tooltip = page.locator(".ocgo-chart-tooltip")
+        window_labels = [
+            "5 小时",
+            "未来 24 小时",
+            "每周",
+            "每月",
+        ]
+        for index, label in enumerate(window_labels):
+            page.mouse.move(5, 5)
+            tooltip.wait_for(state="hidden", timeout=5000)
+            cards.locator(".ocgo-card-value").nth(index).hover()
+            tooltip.wait_for(state="visible", timeout=5000)
+            tooltip_text = tooltip.inner_text()
+            assert "预计（p50）" in tooltip_text
+            assert label in tooltip_text, (index, label, tooltip_text)
+            arrival_note = tooltip.locator(".ocgo-tooltip-note").inner_text()
+            assert arrival_note.startswith("届时月额度消耗累计约 ")
+            assert arrival_note.endswith("%")
+            if index == 1:
+                assert "预测终点" in tooltip_text
         page.mouse.move(5, 5)
         tooltip.wait_for(state="hidden", timeout=5000)
         page.locator('[data-view="forecast"] .ocgo-info-btn').hover()
@@ -974,6 +1002,7 @@ if __name__ == "__main__":
         capture_readme_screenshots()
     else:
         test_main_flow()
+        test_range_presets()
         test_english_browser_locale()
         test_overview_cache_write_card()
         test_model_tables_hide_zero_token_models()

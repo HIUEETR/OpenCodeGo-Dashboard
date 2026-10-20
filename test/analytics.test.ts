@@ -6,6 +6,7 @@ import {
   computeTps,
   computeTtft,
   filterOptions,
+  makeTimeRange,
   tokenRateForRange,
 } from '../src/analytics';
 import { normalizeLegacyUsage, normalizeRawRequest } from '../src/records';
@@ -68,6 +69,28 @@ describe('performance metrics', () => {
     expect(computeTps(record({ firstTokenAt: undefined, lastTokenAt: undefined }))).toBeCloseTo(300 / 3.2);
   });
 
+  it('falls back to request duration when the token timestamp window is implausibly short', () => {
+    const base = record();
+    expect(computeTps(record({
+      firstTokenAt: base.startedAt + 800,
+      lastTokenAt: base.startedAt + 801,
+      finishedAt: base.startedAt + 4000,
+      durationMs: 4000,
+      outputTokens: 300,
+    }))).toBeCloseTo(75);
+  });
+
+  it('excludes samples whose complete request duration is still implausible', () => {
+    const base = record();
+    expect(computeTps(record({
+      firstTokenAt: base.startedAt + 800,
+      lastTokenAt: base.startedAt + 801,
+      finishedAt: base.startedAt + 1000,
+      durationMs: 1000,
+      outputTokens: 5000,
+    }))).toBeNull();
+  });
+
   it('excludes failed, non-streaming, and invalid samples', () => {
     expect(computeTtft(record({ outcome: 'failed' }))).toBeNull();
     expect(computeTtft(record({ stream: false }))).toBeNull();
@@ -79,6 +102,14 @@ describe('performance metrics', () => {
 });
 
 describe('aggregation', () => {
+  it('uses a five hour range with hourly buckets', () => {
+    const now = Date.UTC(2026, 9, 18, 12, 0, 0);
+    const range = makeTimeRange('5h', undefined, undefined, now);
+    expect(range.from).toBe(now - 5 * 60 * 60 * 1000);
+    expect(range.to).toBe(now);
+    expect(range.bucketMs).toBe(60 * 60 * 1000);
+  });
+
   it('combines totals, model rows, and time buckets', () => {
     const first = record();
     const second = record({

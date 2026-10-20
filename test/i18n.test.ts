@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectLanguage } from '../src/i18n';
+import { detectLanguage, rangeLabel } from '../src/i18n';
 import { formatLogEntry } from '../src/logger';
 
 describe('language selection and logs', () => {
@@ -9,6 +9,11 @@ describe('language selection and logs', () => {
     expect(detectLanguage('en-US')).toBe('en');
     expect(detectLanguage('ja-JP')).toBe('en');
     expect(detectLanguage('')).toBe('en');
+  });
+
+  it('labels the five hour range in both languages', () => {
+    expect(rangeLabel('zh', '5h')).toBe('近 5 小时');
+    expect(rangeLabel('en', '5h')).toBe('Last 5 hours');
   });
 
   it('renders structured log entries in the active language', () => {

@@ -672,14 +672,19 @@ export class ForecastPanel {
   private cardExplanation(model: ModelQuotaForecast, window: ForecastWindowForecast): string {
     if (!model.limitKnown) return t(this.language, 'forecast.noQuotaData');
     if (model.monthlyLimitUsd === null || window.p50Ratio === null) return t(this.language, 'forecast.unlimited');
-    if (window.key === 'fiveHour') return t(this.language, 'forecast.explainFiveHour', { value: formatPercent(window.p50Ratio) });
-    if (window.key === 'week') return t(this.language, 'forecast.explainWeek', { value: formatPercent(window.p50Ratio) });
-    if (window.key === 'month') return t(this.language, 'forecast.explainMonth', { value: formatPercent(window.p50Ratio) });
+
+    const p50Ratio = window.p50Ratio;
     const monthUsed = model.windows.month.usedRatio ?? 0;
-    return t(this.language, 'forecast.explain24h', {
-      value: formatPercent(window.p50Ratio),
-      arrival: formatPercent(monthUsed + window.p50Ratio),
-    });
+    let arrivalRatio: number;
+    if (window.key === 'month') {
+      arrivalRatio = p50Ratio;
+    } else if (window.key === 'next24h') {
+      arrivalRatio = monthUsed + p50Ratio;
+    } else {
+      const futureUsd = Math.max(0, window.p50Usd - window.usedUsd);
+      arrivalRatio = monthUsed + futureUsd / model.monthlyLimitUsd;
+    }
+    return t(this.language, 'forecast.explainMonthlyArrival', { value: formatPercent(arrivalRatio) });
   }
 
   private chartExplanation(model: ModelQuotaForecast, window: ForecastWindowForecast, point: ForecastChartPoint): string {

@@ -21,6 +21,7 @@
   var MINUTE = 6e4;
   var HOUR = 60 * MINUTE;
   var DAY = 24 * HOUR;
+  var MAX_TRUSTED_TPS = 1e3;
   function cacheHitRate(record) {
     const denominator = record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens + (record.cacheWrite1hTokens ?? 0);
     return denominator > 0 ? record.cacheReadTokens / denominator : null;
@@ -38,9 +39,17 @@
     const start = typeof record.firstTokenAt === "number" && Number.isFinite(record.firstTokenAt) ? record.firstTokenAt : typeof record.timeToFirstTokenMs === "number" && Number.isFinite(record.timeToFirstTokenMs) ? record.startedAt + record.timeToFirstTokenMs : void 0;
     const fallbackEnd = record.finishedAt ?? (record.durationMs > 0 ? record.startedAt + record.durationMs : void 0);
     const end = typeof record.lastTokenAt === "number" && Number.isFinite(record.lastTokenAt) ? record.lastTokenAt : fallbackEnd;
-    if (start === void 0 || end === void 0 || end <= start) return null;
-    const seconds = (end - start) / 1e3;
-    return seconds > 0 ? record.outputTokens / seconds : null;
+    const streamingTps = start !== void 0 && end !== void 0 && end > start ? tokensPerSecond(record.outputTokens, end - start) : null;
+    if (streamingTps !== null && streamingTps <= MAX_TRUSTED_TPS) return streamingTps;
+    const totalEnd = typeof record.finishedAt === "number" && record.finishedAt > record.startedAt ? record.finishedAt : record.durationMs > 0 ? record.startedAt + record.durationMs : void 0;
+    if (totalEnd === void 0 || start !== void 0 && totalEnd <= start) return null;
+    const totalTps = tokensPerSecond(record.outputTokens, totalEnd - record.startedAt);
+    return totalTps !== null && totalTps <= MAX_TRUSTED_TPS ? totalTps : null;
+  }
+  function tokensPerSecond(tokens, milliseconds) {
+    if (milliseconds <= 0) return null;
+    const value = tokens / (milliseconds / 1e3);
+    return Number.isFinite(value) ? value : null;
   }
   function emptySummary() {
     return {
@@ -170,6 +179,7 @@
     let from = now - 7 * DAY;
     let to = now;
     if (preset === "1h") from = now - HOUR;
+    else if (preset === "5h") from = now - 5 * HOUR;
     else if (preset === "24h") from = now - DAY;
     else if (preset === "7d") from = now - 7 * DAY;
     else if (preset === "30d") from = now - 30 * DAY;
@@ -634,10 +644,7 @@
     "forecast.forecastEndLabel": "预测终点",
     "forecast.hitLabel": "预计达到限额时间",
     "forecast.tooltipPercentMeaning": "百分比表示当前窗口的已用或预计用量占该窗口限额的比例。",
-    "forecast.explainFiveHour": "到 5 小时重置时预计累计用量 {value}",
-    "forecast.explainWeek": "到每周重置时预计累计用量 {value}",
-    "forecast.explainMonth": "到每月重置时预计累计用量 {value}",
-    "forecast.explain24h": "未来 24 小时内，预计新增用量占每月限额的 {value}；届时每月累计约 {arrival}",
+    "forecast.explainMonthlyArrival": "届时月额度消耗累计约 {value}",
     "forecast.explainHistory": "该时间点已累计用量 {value}",
     "forecast.explainPoint": "该时间点预计累计用量 {value}",
     "forecast.explain24hToPoint": "从预测起点到该时间点，预计新增用量占每月限额的 {value}；届时每月累计约 {arrival}",
@@ -663,6 +670,7 @@
     "log.forecastFailed": "用量预测失败：{error}",
     "log.goStatusFailed": "OpenCode Go 状态读取失败：{error}",
     "range.1h": "近 1 小时",
+    "range.5h": "近 5 小时",
     "range.24h": "近 24 小时",
     "range.7d": "近 7 天",
     "range.30d": "近 30 天",
@@ -953,10 +961,7 @@
     "forecast.forecastEndLabel": "Forecast end",
     "forecast.hitLabel": "Projected limit time",
     "forecast.tooltipPercentMeaning": "The percentage is current or projected usage divided by this window’s limit.",
-    "forecast.explainFiveHour": "Projected cumulative usage by the 5-hour reset: {value}",
-    "forecast.explainWeek": "Projected cumulative usage by the weekly reset: {value}",
-    "forecast.explainMonth": "Projected cumulative usage by the monthly reset: {value}",
-    "forecast.explain24h": "Over the next 24 hours, projected new usage is {value} of the monthly limit; monthly usage would reach about {arrival}",
+    "forecast.explainMonthlyArrival": "Monthly usage is projected to reach about {value} by then.",
     "forecast.explainHistory": "Cumulative usage at this time: {value}",
     "forecast.explainPoint": "Projected cumulative usage at this time: {value}",
     "forecast.explain24hToPoint": "From the forecast start to this time, projected new usage is {value} of the monthly limit; monthly usage would reach about {arrival}",
@@ -982,6 +987,7 @@
     "log.forecastFailed": "Usage forecast failed: {error}",
     "log.goStatusFailed": "OpenCode Go status lookup failed: {error}",
     "range.1h": "Last hour",
+    "range.5h": "Last 5 hours",
     "range.24h": "Last 24 hours",
     "range.7d": "Last 7 days",
     "range.30d": "Last 30 days",
@@ -3492,14 +3498,18 @@
     cardExplanation(model, window2) {
       if (!model.limitKnown) return t(this.language, "forecast.noQuotaData");
       if (model.monthlyLimitUsd === null || window2.p50Ratio === null) return t(this.language, "forecast.unlimited");
-      if (window2.key === "fiveHour") return t(this.language, "forecast.explainFiveHour", { value: formatPercent(window2.p50Ratio) });
-      if (window2.key === "week") return t(this.language, "forecast.explainWeek", { value: formatPercent(window2.p50Ratio) });
-      if (window2.key === "month") return t(this.language, "forecast.explainMonth", { value: formatPercent(window2.p50Ratio) });
+      const p50Ratio = window2.p50Ratio;
       const monthUsed = model.windows.month.usedRatio ?? 0;
-      return t(this.language, "forecast.explain24h", {
-        value: formatPercent(window2.p50Ratio),
-        arrival: formatPercent(monthUsed + window2.p50Ratio)
-      });
+      let arrivalRatio;
+      if (window2.key === "month") {
+        arrivalRatio = p50Ratio;
+      } else if (window2.key === "next24h") {
+        arrivalRatio = monthUsed + p50Ratio;
+      } else {
+        const futureUsd = Math.max(0, window2.p50Usd - window2.usedUsd);
+        arrivalRatio = monthUsed + futureUsd / model.monthlyLimitUsd;
+      }
+      return t(this.language, "forecast.explainMonthlyArrival", { value: formatPercent(arrivalRatio) });
     }
     chartExplanation(model, window2, point) {
       if (!model.limitKnown || window2.limitUsd === null || window2.limitUsd <= 0) {
@@ -3862,7 +3872,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     if (!value) return "—";
     return value.length <= 22 ? value : `${value.slice(0, 10)}…${value.slice(-6)}`;
   }
-  var RANGE_PRESETS = ["1h", "24h", "7d", "30d", "all", "custom"];
+  var RANGE_PRESETS = ["1h", "5h", "24h", "7d", "30d", "all", "custom"];
   var MIN_PANEL_WIDTH = 680;
   var MIN_PANEL_HEIGHT = 480;
   var MIN_CHART_SCALE = 0.5;
@@ -3971,7 +3981,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     constructor(logger2) {
       this.logger = logger2;
       this.language = loadJSON(LANGUAGE_STORAGE_KEY, detectLanguage());
-      this.rangePreset = loadJSON(RANGE_STORAGE_KEY, "7d");
+      this.rangePreset = loadJSON(RANGE_STORAGE_KEY, "5h");
       this.activeTab = loadJSON(TAB_STORAGE_KEY, "overview");
       this.experimentalForecast = loadJSON(EXPERIMENTAL_FORECAST_KEY, false);
       if (!this.experimentalForecast && this.activeTab === "forecast") this.activeTab = "data";

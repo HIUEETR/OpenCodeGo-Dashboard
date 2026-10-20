@@ -12,6 +12,7 @@ import type {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const MAX_TRUSTED_TPS = 1_000;
 
 export function cacheHitRate(record: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cacheWrite1hTokens?: number }): number | null {
   const denominator =
@@ -49,9 +50,29 @@ export function computeTps(record: RequestRecord): number | null {
     typeof record.lastTokenAt === 'number' && Number.isFinite(record.lastTokenAt)
       ? record.lastTokenAt
       : fallbackEnd;
-  if (start === undefined || end === undefined || end <= start) return null;
-  const seconds = (end - start) / 1000;
-  return seconds > 0 ? record.outputTokens / seconds : null;
+  const streamingTps = start !== undefined && end !== undefined && end > start
+    ? tokensPerSecond(record.outputTokens, end - start)
+    : null;
+  if (streamingTps !== null && streamingTps <= MAX_TRUSTED_TPS) return streamingTps;
+
+  // Buffered responses can deliver many tokens in one SSE chunk, making the
+  // first-to-last-token window far shorter than the actual generation time.
+  // Fall back to request wall time instead of reporting an impossible rate.
+  const totalEnd =
+    typeof record.finishedAt === 'number' && record.finishedAt > record.startedAt
+      ? record.finishedAt
+      : record.durationMs > 0
+        ? record.startedAt + record.durationMs
+        : undefined;
+  if (totalEnd === undefined || (start !== undefined && totalEnd <= start)) return null;
+  const totalTps = tokensPerSecond(record.outputTokens, totalEnd - record.startedAt);
+  return totalTps !== null && totalTps <= MAX_TRUSTED_TPS ? totalTps : null;
+}
+
+function tokensPerSecond(tokens: number, milliseconds: number): number | null {
+  if (milliseconds <= 0) return null;
+  const value = tokens / (milliseconds / 1000);
+  return Number.isFinite(value) ? value : null;
 }
 
 function emptySummary(): SummaryMetrics {
@@ -215,6 +236,7 @@ export function makeTimeRange(
   let from = now - 7 * DAY;
   let to = now;
   if (preset === '1h') from = now - HOUR;
+  else if (preset === '5h') from = now - 5 * HOUR;
   else if (preset === '24h') from = now - DAY;
   else if (preset === '7d') from = now - 7 * DAY;
   else if (preset === '30d') from = now - 30 * DAY;
