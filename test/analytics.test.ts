@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregateRecords,
   averageBucketMetric,
+  averageExcludingOutliers,
   cacheHitRate,
   computeTps,
   computeTtft,
@@ -98,7 +99,13 @@ describe('performance metrics', () => {
     expect(computeTps(record({ firstTokenAt: undefined, lastTokenAt: undefined, finishedAt: undefined, durationMs: 500 }))).toBeNull();
   });
 
-
+  it('uses a one-percent trimmed average', () => {
+    expect(averageExcludingOutliers([1, 10, 10, 10, 100])).toBe(10);
+    expect(averageExcludingOutliers([0.4, 100, 150, 250, 300, 350])).toBe(200);
+    expect(averageExcludingOutliers([0, ...Array(99).fill(10), 1000])).toBe(10);
+    expect(averageExcludingOutliers([1, 2, 3, 4])).toBeCloseTo(2.5);
+    expect(averageExcludingOutliers([])).toBeNull();
+  });
 });
 
 describe('aggregation', () => {
@@ -155,6 +162,52 @@ describe('aggregation', () => {
     expect(result.models.map((model) => model.model)).toEqual(['model-b', 'model-a']);
     expect(result.buckets.reduce((sum, bucket) => sum + bucket.requests, 0)).toBe(2);
     expect(result.buckets.some((bucket) => bucket.ttftSlowest === 1200)).toBe(true);
+  });
+
+  it('uses robust averages while retaining slowest observations', () => {
+    const base = record();
+    const records = Array.from({ length: 6 }, (_, index) => {
+      const startedAt = base.startedAt + index * 1000;
+      if (index < 5) {
+        return record({
+          key: `wrk_test:req_${index}`,
+          id: `req_${index}`,
+          requestID: `req_${index}`,
+          startedAt,
+          timeToFirstTokenMs: 1000,
+          firstTokenAt: startedAt + 1000,
+          lastTokenAt: startedAt + 2000,
+          outputTokens: 100 + index * 50,
+        });
+      }
+      return record({
+        key: 'wrk_test:req_outlier',
+        id: 'req_outlier',
+        requestID: 'req_outlier',
+        startedAt,
+        timeToFirstTokenMs: 60_000,
+        firstTokenAt: startedAt + 60_000,
+        lastTokenAt: startedAt + 65_000,
+        outputTokens: 2,
+      });
+    });
+    const result = aggregateRecords(
+      records,
+      { model: '', provider: '', userKey: '' },
+      base.startedAt,
+      base.startedAt + 60_000,
+      60_000,
+    );
+    expect(result.summary.ttftSamples).toBe(6);
+    expect(result.summary.ttftAvg).toBe(1000);
+    expect(result.summary.ttftSlowest).toBe(60_000);
+    expect(result.summary.tpsSamples).toBe(6);
+    expect(result.summary.tpsAvg).toBe(175);
+    expect(result.summary.tpsSlowest).toBe(0.4);
+    expect(result.models[0]?.ttftAvg).toBe(1000);
+    expect(result.models[0]?.tpsAvg).toBe(175);
+    expect(result.buckets[0]?.ttftAvg).toBe(1000);
+    expect(result.buckets[0]?.tpsAvg).toBe(175);
   });
 
   it('keeps all-local records when grouping by multi-day buckets', () => {

@@ -350,6 +350,17 @@ def test_main_flow():
         assert panel_background == "rgb(22, 22, 22)"
         assert page.locator('.ocgo-body').evaluate("element => getComputedStyle(element).scrollbarWidth") == "thin"
 
+        overview_cards = page.locator('[data-view="overview"] .ocgo-card')
+        ttft_value = overview_cards.nth(4).locator('.ocgo-card-value').inner_text()
+        tps_value = overview_cards.nth(5).locator('.ocgo-card-value').inner_text()
+        assert ttft_value == "800/800 ms", ttft_value
+        assert tps_value == "109.1/104.5 Token/s", tps_value
+        for index in (4, 5):
+            dimensions = overview_cards.nth(index).locator('.ocgo-card-value').evaluate(
+                "element => ({scrollWidth: element.scrollWidth, clientWidth: element.clientWidth})"
+            )
+            assert dimensions["scrollWidth"] <= dimensions["clientWidth"] + 1, dimensions
+
         page.locator('[data-tab="charts"]').click()
         page.wait_for_selector("svg.ocgo-chart-svg", timeout=5000)
         assert page.locator("svg.ocgo-chart-svg").count() >= 4
@@ -367,8 +378,7 @@ def test_main_flow():
         assert overview_cards.filter(has_text="缓存写入").count() == 0
         for index in (2, 3, 6, 7):
             assert overview_cards.nth(index).locator('.ocgo-card-sub').count() == 0
-        assert "Token/s" in overview_cards.nth(5).locator('.ocgo-card-value').inner_text()
-        assert "Token/s" not in overview_cards.nth(5).locator('.ocgo-card-sub').inner_text()
+
         assert "TTFT 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
         assert "TPS 平均" in page.locator('[data-view="charts"] th').all_inner_texts()
         assert page.locator('[data-view="charts"] th').filter(has_text="总 Token").count() == 1

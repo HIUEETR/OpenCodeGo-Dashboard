@@ -13,6 +13,9 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const MAX_TRUSTED_TPS = 1_000;
+// Trim each tail before averaging; small samples use the arithmetic mean.
+const MIN_TRIMMED_AVERAGE_SAMPLES = 5;
+const TRIM_RATIO = 0.01;
 
 export function cacheHitRate(record: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cacheWrite1hTokens?: number }): number | null {
   const denominator =
@@ -75,6 +78,19 @@ function tokensPerSecond(tokens: number, milliseconds: number): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function arithmeticMean(values: readonly number[]): number | null {
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+export function averageExcludingOutliers(values: readonly number[]): number | null {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (sorted.length < MIN_TRIMMED_AVERAGE_SAMPLES) return arithmeticMean(sorted);
+
+  const trimCount = Math.max(1, Math.ceil(sorted.length * TRIM_RATIO));
+  return arithmeticMean(sorted.slice(trimCount, sorted.length - trimCount));
+}
+
 function emptySummary(): SummaryMetrics {
   return {
     requests: 0,
@@ -100,14 +116,14 @@ function emptySummary(): SummaryMetrics {
 
 interface Accumulator {
   metrics: SummaryMetrics;
-  ttftSum: number;
+  ttftValues: number[];
   ttftSlowest: number | null;
-  tpsSum: number;
+  tpsValues: number[];
   tpsSlowest: number | null;
 }
 
 function newAccumulator(): Accumulator {
-  return { metrics: emptySummary(), ttftSum: 0, ttftSlowest: null, tpsSum: 0, tpsSlowest: null };
+  return { metrics: emptySummary(), ttftValues: [], ttftSlowest: null, tpsValues: [], tpsSlowest: null };
 }
 
 function addRecord(accumulator: Accumulator, record: RequestRecord): void {
@@ -125,7 +141,7 @@ function addRecord(accumulator: Accumulator, record: RequestRecord): void {
   const ttft = computeTtft(record);
   if (ttft !== null) {
     metrics.ttftSamples += 1;
-    accumulator.ttftSum += ttft;
+    accumulator.ttftValues.push(ttft);
     accumulator.ttftSlowest = accumulator.ttftSlowest === null
       ? ttft
       : Math.max(accumulator.ttftSlowest, ttft);
@@ -133,7 +149,7 @@ function addRecord(accumulator: Accumulator, record: RequestRecord): void {
   const tps = computeTps(record);
   if (tps !== null) {
     metrics.tpsSamples += 1;
-    accumulator.tpsSum += tps;
+    accumulator.tpsValues.push(tps);
     accumulator.tpsSlowest = accumulator.tpsSlowest === null
       ? tps
       : Math.min(accumulator.tpsSlowest, tps);
@@ -144,9 +160,9 @@ function finishSummary(accumulator: Accumulator): SummaryMetrics {
   const metrics = accumulator.metrics;
   metrics.successRate = metrics.requests > 0 ? metrics.succeeded / metrics.requests : null;
   metrics.cacheHitRate = cacheHitRate(metrics);
-  metrics.ttftAvg = metrics.ttftSamples > 0 ? accumulator.ttftSum / metrics.ttftSamples : null;
+  metrics.ttftAvg = averageExcludingOutliers(accumulator.ttftValues);
   metrics.ttftSlowest = accumulator.ttftSlowest;
-  metrics.tpsAvg = metrics.tpsSamples > 0 ? accumulator.tpsSum / metrics.tpsSamples : null;
+  metrics.tpsAvg = averageExcludingOutliers(accumulator.tpsValues);
   metrics.tpsSlowest = accumulator.tpsSlowest;
   return metrics;
 }

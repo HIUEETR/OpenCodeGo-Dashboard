@@ -36,6 +36,27 @@ export function formatTps(value: number | null | undefined): string {
   return `${value.toFixed(1)} tok/s`;
 }
 
+export function formatMsPair(
+  average: number | null | undefined,
+  slowest: number | null | undefined,
+): string {
+  if (average === null || average === undefined || slowest === null || slowest === undefined
+    || !Number.isFinite(average) || !Number.isFinite(slowest)) return 'N/A';
+  if (Math.max(average, slowest) < 1000) return `${Math.round(average)}/${Math.round(slowest)} ms`;
+  const seconds = (value: number) => (value / 1000).toFixed(value < 10_000 ? 2 : 1);
+  return `${seconds(average)}/${seconds(slowest)} s`;
+}
+
+export function formatTpsPair(
+  average: number | null | undefined,
+  slowest: number | null | undefined,
+  unit = 'tok/s',
+): string {
+  if (average === null || average === undefined || slowest === null || slowest === undefined
+    || !Number.isFinite(average) || !Number.isFinite(slowest)) return 'N/A';
+  return `${average.toFixed(1)}/${slowest.toFixed(1)} ${unit}`;
+}
+
 export function formatBytes(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value)) return '—';
   if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)} GB`;

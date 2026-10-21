@@ -2,7 +2,7 @@
 // @name         OpenCodeGo Dashboard Assistant
 // @name:zh-CN   OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      1.2.0
+// @version      1.3.0
 // @description  Request analytics, cache hit rate, TTFT, TPS, and usage forecast for the OpenCode Console, with a local archive.
 // @description:zh-CN  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
@@ -22,6 +22,8 @@
   var HOUR = 60 * MINUTE;
   var DAY = 24 * HOUR;
   var MAX_TRUSTED_TPS = 1e3;
+  var MIN_TRIMMED_AVERAGE_SAMPLES = 5;
+  var TRIM_RATIO = 0.01;
   function cacheHitRate(record) {
     const denominator = record.inputTokens + record.cacheReadTokens + record.cacheWriteTokens + (record.cacheWrite1hTokens ?? 0);
     return denominator > 0 ? record.cacheReadTokens / denominator : null;
@@ -51,6 +53,16 @@
     const value = tokens / (milliseconds / 1e3);
     return Number.isFinite(value) ? value : null;
   }
+  function arithmeticMean(values) {
+    if (!values.length) return null;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+  function averageExcludingOutliers(values) {
+    const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+    if (sorted.length < MIN_TRIMMED_AVERAGE_SAMPLES) return arithmeticMean(sorted);
+    const trimCount = Math.max(1, Math.ceil(sorted.length * TRIM_RATIO));
+    return arithmeticMean(sorted.slice(trimCount, sorted.length - trimCount));
+  }
   function emptySummary() {
     return {
       requests: 0,
@@ -74,7 +86,7 @@
     };
   }
   function newAccumulator() {
-    return { metrics: emptySummary(), ttftSum: 0, ttftSlowest: null, tpsSum: 0, tpsSlowest: null };
+    return { metrics: emptySummary(), ttftValues: [], ttftSlowest: null, tpsValues: [], tpsSlowest: null };
   }
   function addRecord(accumulator, record) {
     const metrics = accumulator.metrics;
@@ -91,13 +103,13 @@
     const ttft = computeTtft(record);
     if (ttft !== null) {
       metrics.ttftSamples += 1;
-      accumulator.ttftSum += ttft;
+      accumulator.ttftValues.push(ttft);
       accumulator.ttftSlowest = accumulator.ttftSlowest === null ? ttft : Math.max(accumulator.ttftSlowest, ttft);
     }
     const tps = computeTps(record);
     if (tps !== null) {
       metrics.tpsSamples += 1;
-      accumulator.tpsSum += tps;
+      accumulator.tpsValues.push(tps);
       accumulator.tpsSlowest = accumulator.tpsSlowest === null ? tps : Math.min(accumulator.tpsSlowest, tps);
     }
   }
@@ -105,9 +117,9 @@
     const metrics = accumulator.metrics;
     metrics.successRate = metrics.requests > 0 ? metrics.succeeded / metrics.requests : null;
     metrics.cacheHitRate = cacheHitRate(metrics);
-    metrics.ttftAvg = metrics.ttftSamples > 0 ? accumulator.ttftSum / metrics.ttftSamples : null;
+    metrics.ttftAvg = averageExcludingOutliers(accumulator.ttftValues);
     metrics.ttftSlowest = accumulator.ttftSlowest;
-    metrics.tpsAvg = metrics.tpsSamples > 0 ? accumulator.tpsSum / metrics.tpsSamples : null;
+    metrics.tpsAvg = averageExcludingOutliers(accumulator.tpsValues);
     metrics.tpsSlowest = accumulator.tpsSlowest;
     return metrics;
   }
@@ -1897,6 +1909,16 @@
     if (value === null || value === void 0 || !Number.isFinite(value)) return "N/A";
     return `${value.toFixed(1)} tok/s`;
   }
+  function formatMsPair(average, slowest) {
+    if (average === null || average === void 0 || slowest === null || slowest === void 0 || !Number.isFinite(average) || !Number.isFinite(slowest)) return "N/A";
+    if (Math.max(average, slowest) < 1e3) return `${Math.round(average)}/${Math.round(slowest)} ms`;
+    const seconds = (value) => (value / 1e3).toFixed(value < 1e4 ? 2 : 1);
+    return `${seconds(average)}/${seconds(slowest)} s`;
+  }
+  function formatTpsPair(average, slowest, unit = "tok/s") {
+    if (average === null || average === void 0 || slowest === null || slowest === void 0 || !Number.isFinite(average) || !Number.isFinite(slowest)) return "N/A";
+    return `${average.toFixed(1)}/${slowest.toFixed(1)} ${unit}`;
+  }
   function formatBytes(value) {
     if (value === void 0 || !Number.isFinite(value)) return "—";
     if (value >= 1e9) return `${(value / 1e9).toFixed(2)} GB`;
@@ -2544,7 +2566,7 @@
   }
 
   // src/version.ts
-  var APP_VERSION = "1.2.0";
+  var APP_VERSION = "1.3.0";
 
   // src/ui/charts.ts
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -5017,13 +5039,17 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       };
       const success = formatPercent(summary.successRate);
       const failures = t(this.language, "metric.failures", { n: summary.failed });
-      const tpsValue = summary.tpsAvg === null || summary.tpsSlowest === null ? t(this.language, "common.notAvailable") : `${summary.tpsAvg.toFixed(1)} / ${summary.tpsSlowest.toFixed(1)} ${t(this.language, "metric.tpsUnit")}`;
+      const tpsValue = formatTpsPair(
+        summary.tpsAvg,
+        summary.tpsSlowest,
+        t(this.language, "metric.tpsUnit")
+      );
       const cards = [
         card(t(this.language, "metric.requests"), formatNumber(summary.requests), `${t(this.language, "metric.successRate")} ${success} · ${failures}`),
         card(t(this.language, "metric.cost"), formatUsd(summary.costUsd), summary.requests ? t(this.language, "metric.costPerRequest", { value: formatUsd(summary.costUsd / summary.requests) }) : "—"),
         card(t(this.language, "metric.input"), formatCompact(summary.inputTokens), void 0, "blue"),
         card(t(this.language, "metric.output"), formatCompact(summary.outputTokens)),
-        card(t(this.language, "metric.ttft"), `${formatMs(summary.ttftAvg)} / ${formatMs(summary.ttftSlowest)}`, t(this.language, "metric.samples", { n: summary.ttftSamples }), "blue"),
+        card(t(this.language, "metric.ttft"), formatMsPair(summary.ttftAvg, summary.ttftSlowest), t(this.language, "metric.samples", { n: summary.ttftSamples }), "blue"),
         card(t(this.language, "metric.tps"), tpsValue, t(this.language, "metric.samples", { n: summary.tpsSamples }), "violet")
       ];
       if (summary.cacheWriteTokens > 0) {

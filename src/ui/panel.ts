@@ -26,10 +26,12 @@ import {
   formatCompact,
   formatDateTime,
   formatMs,
+  formatMsPair,
   formatNumber,
   formatPercent,
   formatRelative,
   formatTps,
+  formatTpsPair,
   formatUsd,
 } from '../format';
 import { detectLanguage, t } from '../i18n';
@@ -1331,15 +1333,17 @@ export class Panel {
     };
     const success = formatPercent(summary.successRate);
     const failures = t(this.language, 'metric.failures', { n: summary.failed });
-    const tpsValue = summary.tpsAvg === null || summary.tpsSlowest === null
-      ? t(this.language, 'common.notAvailable')
-      : `${summary.tpsAvg.toFixed(1)} / ${summary.tpsSlowest.toFixed(1)} ${t(this.language, 'metric.tpsUnit')}`;
+    const tpsValue = formatTpsPair(
+      summary.tpsAvg,
+      summary.tpsSlowest,
+      t(this.language, 'metric.tpsUnit'),
+    );
     const cards = [
       card(t(this.language, 'metric.requests'), formatNumber(summary.requests), `${t(this.language, 'metric.successRate')} ${success} · ${failures}`),
       card(t(this.language, 'metric.cost'), formatUsd(summary.costUsd), summary.requests ? t(this.language, 'metric.costPerRequest', { value: formatUsd(summary.costUsd / summary.requests) }) : '—'),
       card(t(this.language, 'metric.input'), formatCompact(summary.inputTokens), undefined, 'blue'),
       card(t(this.language, 'metric.output'), formatCompact(summary.outputTokens)),
-      card(t(this.language, 'metric.ttft'), `${formatMs(summary.ttftAvg)} / ${formatMs(summary.ttftSlowest)}`, t(this.language, 'metric.samples', { n: summary.ttftSamples }), 'blue'),
+      card(t(this.language, 'metric.ttft'), formatMsPair(summary.ttftAvg, summary.ttftSlowest), t(this.language, 'metric.samples', { n: summary.ttftSamples }), 'blue'),
       card(t(this.language, 'metric.tps'), tpsValue, t(this.language, 'metric.samples', { n: summary.tpsSamples }), 'violet'),
     ];
     if (summary.cacheWriteTokens > 0) {
