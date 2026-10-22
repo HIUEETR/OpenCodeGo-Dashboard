@@ -2,11 +2,11 @@
   <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo Dashboard Assistant Banner" />
 </p>
 
-# OpenCodeGo Dashboard Assistant (Userscript) v1.3.0
+# OpenCodeGo Dashboard Assistant (Userscript) v1.4.0
 
 **[中文](README.zh-CN.md)** | English
 
-OpenCodeGo Dashboard Assistant adds a floating dashboard to [OpenCode Console](https://opencode.ai/console/) that brings together request performance, OpenCode Go usage, and an optional usage forecast.
+OpenCodeGo Dashboard Assistant adds a floating dashboard to [OpenCode Console](https://opencode.ai/console/) that brings together request performance and OpenCode Go usage.
 
 ## Screenshots
 
@@ -17,10 +17,6 @@ OpenCodeGo Dashboard Assistant adds a floating dashboard to [OpenCode Console](h
 ### Charts
 
 ![Charts](image/README/charts.en.png)
-
-### Usage forecast
-
-![Usage forecast](image/README/usage-forecast.en.png)
 
 ## Features
 
@@ -33,9 +29,7 @@ OpenCodeGo Dashboard Assistant adds a floating dashboard to [OpenCode Console](h
 - Model tables show total tokens and cost, with a hover breakdown. Costs are estimated from OpenCode Go prices.
 - The Sync & Data tab shows cached model pricing, Peak / Off-Peak periods, context tiers, browser storage, diagnostics, and export controls.
 - Local IndexedDB archive keeps compact request metrics beyond the Console's 30-day log retention window.
-- Optional Beta usage forecast, disabled by default. When enabled, the Overview gains a summary and a Usage forecast tab appears with a selectable model, 5-hour, next-24-hours, weekly, and monthly cards, a forecast chart with switchable windows, and a per-model usage and limit table.
-- Usage forecast limits are per model: monthly limit `M`, weekly `M / 2`, and 5-hour `M / 5`. The next 24 hours is a forecast horizon, not a limit window.
-- Chinese or English UI, remembered filters, time range, current tab, language, forecast toggle, panel size, launcher position, and chart zoom.
+- Chinese or English UI, remembered filters, time range, current tab, language, panel size, launcher position, and chart zoom.
 
 ## Data sources and compatibility
 
@@ -44,7 +38,6 @@ The userscript uses the current same-origin OpenCode Console endpoints:
 - `GET /console/api/user/workspaces`
 - `GET /console/api/request-logs?category=inference&since=...&limit=50...`
 - `GET /console/api/usage/users?range=30d&page=...&pageSize=100&costOrder=desc`
-- `GET /console/api/go/status`
 - `GET /v2/docs/console/go/`
 
 The request-log endpoint requires the current workspace in `x-org-id` and uses the `opencode.ai` session cookie. The script also observes the Console's own same-origin inference request-log responses and saves matching pages that identify a `wrk_` workspace, so opening the official log page can seed local data without a second request.
@@ -61,18 +54,6 @@ If OpenCode changes these routes or fields, include the copied diagnostics log i
 - Each completed sync shows the number of new records or an up-to-date message.
 
 If the Console is not opened for more than 30 days, the missed period cannot be recovered from the official API. The panel reports the history gap.
-
-## Usage forecast
-
-The Beta usage forecast uses the current workspace's full local history, the cached OpenCode Go price document, and the Go usage-limit status. It applies the active model, provider, and member / service account filters.
-
-- Every model's usage is evaluated independently; limits are never summed across models.
-- 5-hour, weekly, and monthly windows use official reset times when available and UTC or trailing-window estimates otherwise.
-- The chart shows historical cumulative usage, the p50 forecast, the p10–p90 prediction interval, the current time, and limit reset markers.
-- The highest-risk model has the largest p90 utilization across the 5-hour, weekly, and monthly windows.
-- Confidence is reduced by missing official status, short history, a sync gap, stale pricing, or more than 5% unpriced requests.
-
-The forecast is only a rough estimate—take it with a grain of salt.
 
 ## Local data
 

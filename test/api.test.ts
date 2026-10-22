@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, getGoQuotaStatus, listRequestLogs, listUsagePrincipals, listWorkspaces, requestJson } from '../src/api';
+import { ApiError, listRequestLogs, listUsagePrincipals, listWorkspaces, requestJson } from '../src/api';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -74,54 +74,6 @@ describe('OpenCode Console API client', () => {
     expect(new URL(url).pathname).toBe('/console/api/usage/users');
     expect((init.headers as Record<string, string>)['x-org-id']).toBe('wrk_test');
   });
-  it('loads Go quota status with the current workspace and same-origin credentials', async () => {
-    vi.stubGlobal('location', { origin: 'https://opencode.ai' });
-    const fetchMock = vi.fn(async () => jsonResponse({
-      product: 'go',
-      cancelAtPeriodEnd: false,
-      access: {
-        startsAt: '2026-10-01T00:00:00.000Z',
-        endsAt: '2026-11-01T00:00:00.000Z',
-        meters: {
-          fiveHour: { startsAt: 100, resetsAt: 200, limitMicroCents: '1200000000', usedMicroCents: 300000000 },
-          week: { startsAt: 50, resetsAt: 250, limitMicroCents: 3000000000, usedMicroCents: 400000000 },
-          month: { resetsAt: 500, limitMicroCents: 6000000000, usedMicroCents: 500000000 },
-        },
-      },
-    }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const status = await getGoQuotaStatus('wrk_test');
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(new URL(url).pathname).toBe('/console/api/go/status');
-    expect((init.headers as Record<string, string>)['x-org-id']).toBe('wrk_test');
-    expect(init.credentials).toBe('same-origin');
-    expect(status.active).toBe(true);
-    expect(status.product).toBe('go');
-    expect(status.fiveHour.resetsAt).toBe(200);
-    expect(status.fiveHour.limitMicroCents).toBe(1_200_000_000);
-    expect(status.month.resetsAt).toBe(500);
-    expect(status.accessStartsAt).toBe(Date.parse('2026-10-01T00:00:00.000Z'));
-  });
-
-  it('normalizes a Go response without active access', async () => {
-    vi.stubGlobal('location', { origin: 'https://opencode.ai' });
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ product: 'go', access: null, cancelAtPeriodEnd: true })));
-    const status = await getGoQuotaStatus('wrk_test');
-    expect(status.active).toBe(false);
-    expect(status.fiveHour).toEqual({});
-    expect(status.cancelAtPeriodEnd).toBe(true);
-  });
-
-  it('surfaces Go status authentication and permission failures', async () => {
-    vi.stubGlobal('location', { origin: 'https://opencode.ai' });
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ message: 'unauthorized' }, { status: 401 })));
-    await expect(getGoQuotaStatus('wrk_test')).rejects.toMatchObject({ kind: 'session' });
-
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ message: 'forbidden' }, { status: 403 })));
-    await expect(getGoQuotaStatus('wrk_test')).rejects.toMatchObject({ kind: 'permission' });
-  });
-
   it('classifies cursor, auth, and rate limit errors', async () => {
     vi.stubGlobal('location', { origin: 'https://opencode.ai' });
     let response = jsonResponse({ _tag: 'RequestLogCursorRestartRequired', message: 'restart', code: 'cursor_restart' }, { status: 409 });

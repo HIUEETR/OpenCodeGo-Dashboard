@@ -13,7 +13,7 @@ const banner = `// ==UserScript==
 // @name:zh-CN   OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
 // @version      ${pkg.version}
-// @description  Request analytics, cache hit rate, TTFT, TPS, and usage forecast for the OpenCode Console, with a local archive.
+// @description  Request analytics, cache hit rate, TTFT, and TPS for the OpenCode Console, with a local archive.
 // @description:zh-CN  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
 // @match        https://opencode.ai/console/*
@@ -52,5 +52,3 @@ if (watch) {
   await build(options);
   console.log(`Built ${path.relative(root, outfile)}`);
 }
-
-

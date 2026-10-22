@@ -1,8 +1,7 @@
 export type Language = 'zh' | 'en';
 export type Outcome = 'succeeded' | 'failed' | 'rejected' | 'cancelled';
 export type RangePreset = '1h' | '5h' | '24h' | '7d' | '30d' | 'all' | 'custom';
-export type TabKey = 'overview' | 'charts' | 'requests' | 'data' | 'forecast';
-export type GoPlan = 'go' | 'go-plus';
+export type TabKey = 'overview' | 'charts' | 'requests' | 'data';
 
 export interface Workspace {
   id: string;
@@ -237,36 +236,11 @@ export interface GoPricingTier {
   period?: 'peak' | 'off-peak';
 }
 
-export interface GoQuotaLimits {
-  go: Record<string, number | null>;
-  'go-plus': Record<string, number | null>;
-}
-
 export interface GoPricingCache {
   fetchedAt: number;
   source: string;
   schemaVersion: number;
   tiers: GoPricingTier[];
-  quotaLimits: GoQuotaLimits;
-}
-
-export interface GoMeterWindow {
-  startsAt?: number;
-  resetsAt?: number;
-  limitMicroCents?: number;
-  usedMicroCents?: number;
-}
-
-export interface GoQuotaStatus {
-  active: boolean;
-  product: GoPlan | null;
-  accessStartsAt?: number;
-  accessEndsAt?: number;
-  cancelAtPeriodEnd: boolean;
-  fiveHour: GoMeterWindow;
-  week: GoMeterWindow;
-  month: GoMeterWindow;
-  fetchedAt: number;
 }
 
 export interface CostBreakdown {

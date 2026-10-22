@@ -27,19 +27,10 @@ HTML_DOCS = """
   <body>
     <div data-plan-panel="go">
       <table>
-        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th></tr></thead>
         <tbody>
-          <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$80</strong></td></tr>
-          <tr><td>GPT 5.6 Luna (≤ 272K tokens)</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td><td><strong>$15</strong></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div data-plan-panel="go-plus">
-      <table>
-        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cached Read</th><th>Cached Write</th><th>Monthly limit</th></tr></thead>
-        <tbody>
-          <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td><td><strong>$160</strong></td></tr>
-          <tr><td>GPT 5.6 Luna (≤ 272K tokens)</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td><td><strong>$60</strong></td></tr>
+          <tr><td>DeepSeek V4.1 Flash</td><td>$0.30</td><td>$1.20</td><td>$0.006</td><td>-</td></tr>
+          <tr><td>GPT 5.6 Luna (≤ 272K tokens)</td><td>$0.20</td><td>$1.20</td><td>$0.02</td><td>$0.25</td></tr>
         </tbody>
       </table>
     </div>
@@ -100,55 +91,12 @@ def api_record(
     }
 
 
-def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, status_seen=None, status_unauthorized=False, zero_token_model=None, log_delay_ms=0):
+def install_routes(page, requests_seen, *, rate_limit_once=False, unauthorized=False, cache_write=0, pricing_seen=None, zero_token_model=None, log_delay_ms=0):
     limited = {"done": False}
 
     def handler(route):
         request = route.request
         url = request.url
-        if url.endswith("/console/api/go/status"):
-            if status_seen is not None:
-                status_seen.append({"url": url, "headers": request.headers})
-            if status_unauthorized:
-                route.fulfill(
-                    status=401,
-                    content_type="application/json",
-                    body=json.dumps({"message": "unauthorized"}),
-                )
-                return
-            now = int(time.time() * 1000)
-            route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps({
-                    "product": "go",
-                    "cancelAtPeriodEnd": False,
-                    "access": {
-                        "startsAt": now - 10 * 86_400_000,
-                        "endsAt": now + 20 * 86_400_000,
-                        "meters": {
-                            "fiveHour": {
-                                "startsAt": now - 2 * 3_600_000,
-                                "resetsAt": now + 3 * 3_600_000,
-                                "limitMicroCents": 1_200_000_000,
-                                "usedMicroCents": 300_000_000,
-                            },
-                            "week": {
-                                "startsAt": now - 2 * 86_400_000,
-                                "resetsAt": now + 5 * 86_400_000,
-                                "limitMicroCents": 3_000_000_000,
-                                "usedMicroCents": 600_000_000,
-                            },
-                            "month": {
-                                "resetsAt": now + 20 * 86_400_000,
-                                "limitMicroCents": 6_000_000_000,
-                                "usedMicroCents": 1_000_000_000,
-                            },
-                        },
-                    },
-                }),
-            )
-            return
         if url.endswith("/console/api/user/workspaces"):
             route.fulfill(
                 status=200,
@@ -302,7 +250,7 @@ def test_main_flow():
         open_fixture(context, page)
 
         page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator(".ocgo-statusbar").filter(has_text="3 条本地记录").wait_for(timeout=15000)
 
         assert len(requests_seen) >= 2, requests_seen
         first = requests_seen[0]
@@ -598,7 +546,7 @@ def test_workspace_route_change():
         install_routes(page, requests_seen)
         open_fixture(context, page)
         page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator(".ocgo-statusbar").filter(has_text="3 条本地记录").wait_for(timeout=15000)
 
         page.evaluate(f"history.pushState({{}}, '', '/console/{SECOND_WORKSPACE}')")
         page.get_by_text("Second", exact=True).wait_for(timeout=10000)
@@ -619,7 +567,7 @@ def test_rate_limit_retry():
         install_routes(page, requests_seen, rate_limit_once=True)
         open_fixture(context, page)
         page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator(".ocgo-statusbar").filter(has_text="3 条本地记录").wait_for(timeout=15000)
         assert len(requests_seen) >= 3
         assert not errors, errors
         browser.close()
@@ -673,7 +621,7 @@ def test_overview_cache_write_card():
         install_routes(page, requests_seen, cache_write=125)
         open_fixture(context, page)
         page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
+        page.locator(".ocgo-statusbar").filter(has_text="3 条本地记录").wait_for(timeout=15000)
 
         cards = page.locator('[data-view="overview"] .ocgo-card')
         labels = cards.locator('.ocgo-card-label').all_text_contents()
@@ -718,242 +666,6 @@ def test_model_tables_hide_zero_token_models():
 
         assert not errors, errors
         browser.close()
-
-
-def test_forecast_beta_toggle():
-    requests_seen = []
-    status_seen = []
-    pricing_seen = []
-    errors = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        install_routes(page, requests_seen, pricing_seen=pricing_seen, status_seen=status_seen)
-        open_fixture(context, page)
-
-        page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
-        forecast_tab = page.locator('[data-tab="forecast"]')
-        assert forecast_tab.is_hidden()
-        assert page.locator('[data-view="overview"]').is_visible()
-        overview_forecast = page.locator('[data-view="overview"] [data-overview-forecast]')
-        assert overview_forecast.is_hidden()
-        assert not status_seen, status_seen
-
-        page.locator('[data-tab="data"]').click()
-        toggle = page.locator('.ocgo-experimental-row input')
-        toggle.check()
-        assert forecast_tab.is_visible()
-        assert "Beta" in forecast_tab.inner_text()
-        tab_order = page.locator('[data-tab]').evaluate_all("elements => elements.map(element => element.dataset.tab)")
-        assert tab_order == ["overview", "charts", "forecast", "requests", "data"]
-        assert not status_seen, status_seen
-
-        page.locator('[data-tab="overview"]').click()
-        overview_forecast.wait_for(state="visible", timeout=15000)
-        overview_forecast.locator(".ocgo-forecast-card").first.wait_for(timeout=15000)
-        assert overview_forecast.locator(".ocgo-forecast-card").count() == 4
-        overview_table = page.locator('[data-view="overview"] tbody').first
-        overview_table.wait_for(state="visible", timeout=5000)
-        assert overview_forecast.evaluate("""element => {
-            const table = element.nextElementSibling?.querySelector('tbody');
-            return Boolean(table) && element.getBoundingClientRect().top < table.getBoundingClientRect().top;
-        }""")
-
-        forecast_tab.click()
-        cards = page.locator('[data-view="forecast"] .ocgo-forecast-card')
-        cards.first.wait_for(timeout=15000)
-        assert cards.count() == 4
-        assert cards.locator(".ocgo-card-label").all_inner_texts() == [
-            "到 5 小时重置时预计累计用量",
-            "未来 24 小时预计新增用量",
-            "到每周重置时预计累计用量",
-            "到每月重置时预计累计用量",
-        ]
-        assert status_seen and "x-org-id" in status_seen[0]["headers"]
-        assert status_seen[0]["headers"]["x-org-id"] == WORKSPACE
-        headers = page.locator('[data-view="forecast"] .ocgo-forecast-table thead th').all_inner_texts()
-        assert headers == ["模型", "每月上限", "5 小时已用/上限", "每周已用/上限", "每月已用/上限"]
-        rows = page.locator('[data-view="forecast"] .ocgo-forecast-table tbody tr')
-        assert rows.count() == 1, rows.all_inner_texts()
-        deepseek = page.locator('[data-view="forecast"] tr[data-model="deepseek-v4.1-flash"]')
-        assert deepseek.locator("td").count() == 5
-        assert "$80.00" in deepseek.locator("td").nth(1).inner_text()
-        assert "$16.00" in (deepseek.locator("td").nth(2).get_attribute("title") or "")
-        assert "$40.00" in (deepseek.locator("td").nth(3).get_attribute("title") or "")
-        assert page.locator('[data-view="forecast"] svg.ocgo-forecast-chart').count() == 1
-        tooltip = page.locator(".ocgo-chart-tooltip")
-        window_labels = [
-            "5 小时",
-            "未来 24 小时",
-            "每周",
-            "每月",
-        ]
-        for index, label in enumerate(window_labels):
-            page.mouse.move(5, 5)
-            tooltip.wait_for(state="hidden", timeout=5000)
-            cards.locator(".ocgo-card-value").nth(index).hover()
-            tooltip.wait_for(state="visible", timeout=5000)
-            tooltip_text = tooltip.inner_text()
-            assert "预计（p50）" in tooltip_text
-            assert label in tooltip_text, (index, label, tooltip_text)
-            arrival_note = tooltip.locator(".ocgo-tooltip-note").inner_text()
-            assert arrival_note.startswith("届时月额度消耗累计约 ")
-            assert arrival_note.endswith("%")
-            if index == 1:
-                assert "预测终点" in tooltip_text
-        page.mouse.move(5, 5)
-        tooltip.wait_for(state="hidden", timeout=5000)
-        page.locator('[data-view="forecast"] .ocgo-info-btn').hover()
-        tooltip.wait_for(state="visible", timeout=5000)
-        info_text = tooltip.inner_text()
-        assert "如何阅读用量预测" in info_text
-        assert "15 分钟" in info_text
-        assert "时间虚线" in info_text
-        page.mouse.move(5, 5)
-        tooltip.wait_for(state="hidden", timeout=5000)
-        legend_text = page.locator('[data-view="forecast"] .ocgo-forecast-chart-legend').inner_text()
-        assert "历史累计" in legend_text
-        assert "预测 p50" in legend_text
-        assert "p10–p90 区间" in legend_text
-        assert "当前时刻" in legend_text
-        assert "限额重置（5 小时 / 每周 / 每月）" in legend_text
-        tightest = page.locator('[data-view="forecast"] .ocgo-forecast-help')
-        assert tightest.is_visible()
-        tightest.hover()
-        tooltip.wait_for(state="visible", timeout=5000)
-        tightest_text = tooltip.inner_text()
-        assert "什么是“风险最高模型”" in tightest_text
-        assert "最高 p90" in tightest_text
-        assert "风险分最高" in tightest_text
-        assert "p90" in tightest_text
-        page.mouse.move(5, 5)
-        tooltip.wait_for(state="hidden", timeout=5000)
-        chart_targets = page.locator('[data-view="forecast"] .ocgo-forecast-hover-target')
-        assert chart_targets.count() > 0
-        chart_targets.last.hover()
-        tooltip.wait_for(state="visible", timeout=5000)
-        chart_text = tooltip.inner_text()
-        assert "预测中位数（p50）" in chart_text
-        assert "预测上界（p90）" in chart_text
-        page.mouse.move(5, 5)
-        tooltip.wait_for(state="hidden", timeout=5000)
-        deepseek.click()
-        page.wait_for_timeout(100)
-        assert page.locator('[data-view="forecast"] .ocgo-forecast-row.ocgo-active').get_attribute("data-model") == "deepseek-v4.1-flash"
-
-        page.reload(wait_until="domcontentloaded")
-        page.wait_for_selector('.ocgo-panel', state='visible', timeout=15000)
-        assert forecast_tab.is_visible()
-        assert page.locator('[data-view="forecast"]').is_visible()
-        page.locator('[data-tab="data"]').click()
-        assert page.locator('.ocgo-experimental-row input').is_checked()
-
-        page.locator('.ocgo-experimental-row input').uncheck()
-        assert forecast_tab.is_hidden()
-        assert page.locator('[data-view="data"]').is_visible()
-        assert not errors, errors
-        browser.close()
-
-
-def test_forecast_refresh_keeps_view():
-    requests_seen = []
-    status_seen = []
-    errors = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        install_routes(page, requests_seen, status_seen=status_seen, log_delay_ms=350)
-        open_fixture(context, page)
-
-        sync_button = page.get_by_text("立即同步", exact=True).first
-        sync_button.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
-        page.locator('[data-tab="data"]').click()
-        page.locator('.ocgo-experimental-row input').check()
-        page.locator('[data-tab="forecast"]').click()
-        page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
-        page.locator('[data-view="forecast"] .ocgo-forecast-window-btn').filter(has_text="每周").click()
-        assert page.locator('[data-view="forecast"] .ocgo-forecast-window-btn.ocgo-active').inner_text() == "每周"
-
-        page.evaluate("""() => {
-          const view = document.getElementById('ocgo-lens-host').shadowRoot.querySelector('[data-view="forecast"]');
-          window.__forecastRefreshSnapshots = [];
-          const capture = () => {
-            const root = view.querySelector('.ocgo-forecast-view');
-            window.__forecastRefreshSnapshots.push({
-              cards: view.querySelectorAll('.ocgo-forecast-card').length,
-              charts: view.querySelectorAll('svg.ocgo-forecast-chart').length,
-              busy: root?.getAttribute('aria-busy') || 'false',
-              text: view.innerText,
-            });
-          };
-          capture();
-          window.__forecastRefreshObserver = new MutationObserver(capture);
-          window.__forecastRefreshObserver.observe(view, {
-            subtree: true,
-            childList: true,
-            characterData: true,
-            attributes: true,
-            attributeFilter: ['aria-busy', 'data-refreshing'],
-          });
-        }""")
-
-        sync_button = page.get_by_text("立即同步", exact=True).first
-        sync_button.click()
-        page.wait_for_function(
-            "() => [...document.getElementById('ocgo-lens-host').shadowRoot.querySelectorAll('.ocgo-sync-btn')].some((button) => button.textContent?.trim() === '停止')",
-            timeout=5000,
-        )
-        page.wait_for_function(
-            "() => !document.getElementById('ocgo-lens-host').shadowRoot.querySelector('[data-view=\"forecast\"] .ocgo-forecast-view[data-refreshing]')",
-            timeout=15000,
-        )
-        page.wait_for_function(
-            "() => window.__forecastRefreshSnapshots.some((item) => item.busy === 'true')",
-            timeout=5000,
-        )
-        page.wait_for_timeout(150)
-
-        snapshots = page.evaluate("window.__forecastRefreshSnapshots")
-        assert snapshots, snapshots
-        assert all(item["cards"] == 4 for item in snapshots), snapshots
-        assert all(item["charts"] == 1 for item in snapshots), snapshots
-        assert all("正在计算用量预测" not in item["text"] for item in snapshots), snapshots
-        assert page.locator('[data-view="forecast"] .ocgo-forecast-window-btn.ocgo-active').inner_text() == "每周"
-        assert not errors, errors
-        browser.close()
-
-
-
-def test_forecast_status_fallback():
-    requests_seen = []
-    status_seen = []
-    errors = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        page.on("pageerror", lambda error: errors.append(str(error)))
-        install_routes(page, requests_seen, status_seen=status_seen, status_unauthorized=True)
-        open_fixture(context, page)
-        page.get_by_text("立即同步", exact=True).first.click()
-        page.get_by_text("3", exact=True).first.wait_for(timeout=15000)
-        page.locator('[data-tab="data"]').click()
-        page.locator('.ocgo-experimental-row input').check()
-        page.locator('[data-tab="forecast"]').click()
-        page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
-        assert page.locator('[data-view="forecast"] .ocgo-forecast-card').count() == 4
-        assert status_seen
-        assert page.locator('[data-view="forecast"] .ocgo-warning').filter(has_text="Go 状态请求失败").count() == 1
-        assert not errors, errors
-        browser.close()
-
-
 def capture_readme_screenshots():
     output_dir = Path(__file__).resolve().parent.parent / "image" / "README"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -970,15 +682,13 @@ def capture_readme_screenshots():
               localStorage.setItem('ocgo-lens:panelState', JSON.stringify({
                 open: true, width: 1200, height: 920, x: 40, y: 24
               }));
-              localStorage.setItem('ocgo-lens:experimentalForecast', JSON.stringify(true));
             """)
             page = context.new_page()
             page.on("pageerror", lambda error: errors.append(str(error)))
-            install_routes(page, [], pricing_seen=[], status_seen=[])
+            install_routes(page, [], pricing_seen=[])
             open_fixture(context, page, language=language)
             page.locator('.ocgo-sync-btn').click()
             page.locator('.ocgo-statusbar').filter(has_text='3').wait_for(timeout=15000)
-            page.locator('[data-view="overview"] .ocgo-forecast-card').first.wait_for(timeout=15000)
             page.locator('.ocgo-toast').wait_for(state='hidden', timeout=6000)
             page.locator('#ocgo-lens-panel').screenshot(
                 path=str(output_dir / f'overview.{suffix}.png'),
@@ -990,12 +700,6 @@ def capture_readme_screenshots():
                 path=str(output_dir / f'charts.{suffix}.png'),
             )
 
-            page.locator('[data-tab="forecast"]').click()
-            page.locator('[data-view="forecast"] .ocgo-forecast-card').first.wait_for(timeout=15000)
-            page.wait_for_timeout(250)
-            page.locator('#ocgo-lens-panel').screenshot(
-                path=str(output_dir / f'usage-forecast.{suffix}.png'),
-            )
             context.close()
         browser.close()
     if errors:
@@ -1016,9 +720,6 @@ if __name__ == "__main__":
         test_english_browser_locale()
         test_overview_cache_write_card()
         test_model_tables_hide_zero_token_models()
-        test_forecast_beta_toggle()
-        test_forecast_refresh_keeps_view()
-        test_forecast_status_fallback()
         test_fab_and_resize_interactions()
         test_workspace_route_change()
         test_rate_limit_retry()

@@ -2,8 +2,8 @@
 // @name         OpenCodeGo Dashboard Assistant
 // @name:zh-CN   OpenCodeGo 仪表盘助手
 // @namespace    opencodego-dashboard
-// @version      1.3.0
-// @description  Request analytics, cache hit rate, TTFT, TPS, and usage forecast for the OpenCode Console, with a local archive.
+// @version      1.4.0
+// @description  Request analytics, cache hit rate, TTFT, and TPS for the OpenCode Console, with a local archive.
 // @description:zh-CN  缓存命中率、TTFT、TPS 与 OpenCode 控制台用量可视化；本地长期归档。
 // @author       hiu
 // @match        https://opencode.ai/console/*
@@ -221,11 +221,11 @@
         modelAccumulators.set(modelKey, modelAccumulator);
       }
       addRecord(modelAccumulator, record);
-      const bucketStart2 = localBucketStart(record.startedAt, bucketMs, bucketAnchor);
-      let bucketAccumulator = bucketAccumulators.get(bucketStart2);
+      const bucketStart = localBucketStart(record.startedAt, bucketMs, bucketAnchor);
+      let bucketAccumulator = bucketAccumulators.get(bucketStart);
       if (!bucketAccumulator) {
         bucketAccumulator = newAccumulator();
-        bucketAccumulators.set(bucketStart2, bucketAccumulator);
+        bucketAccumulators.set(bucketStart, bucketAccumulator);
       }
       addRecord(bucketAccumulator, record);
     }
@@ -386,55 +386,6 @@
       avatarUrl: typeof item.avatarUrl === "string" ? item.avatarUrl : null
     })).filter((item) => item.id.startsWith("wrk_"));
   }
-  function optionalEpoch(value) {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string" && value.trim() !== "") {
-      const numeric = Number(value);
-      if (Number.isFinite(numeric)) return numeric;
-      const parsed = Date.parse(value);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return void 0;
-  }
-  function optionalAmount(value) {
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
-    if (typeof value === "string" && value.trim() !== "") {
-      const numeric = Number(value);
-      if (Number.isFinite(numeric) && numeric >= 0) return numeric;
-    }
-    return void 0;
-  }
-  function meterWindow(value) {
-    if (!value || typeof value !== "object") return {};
-    const meter = value;
-    return {
-      ...optionalEpoch(meter.startsAt) === void 0 ? {} : { startsAt: optionalEpoch(meter.startsAt) },
-      ...optionalEpoch(meter.resetsAt) === void 0 ? {} : { resetsAt: optionalEpoch(meter.resetsAt) },
-      ...optionalAmount(meter.limitMicroCents) === void 0 ? {} : { limitMicroCents: optionalAmount(meter.limitMicroCents) },
-      ...optionalAmount(meter.usedMicroCents) === void 0 ? {} : { usedMicroCents: optionalAmount(meter.usedMicroCents) }
-    };
-  }
-  async function getGoQuotaStatus(workspaceID, signal) {
-    const data = await requestJson("/api/go/status", { workspaceID, signal });
-    if (!data || typeof data !== "object") {
-      throw new ApiError("contract", "Go status response was not an object.");
-    }
-    const record = data;
-    const product = record.product === "go" || record.product === "go-plus" ? record.product : null;
-    const access = record.access && typeof record.access === "object" ? record.access : null;
-    const meters = access?.meters && typeof access.meters === "object" ? access.meters : null;
-    return {
-      active: Boolean(access && product),
-      product,
-      ...optionalEpoch(access?.startsAt) === void 0 ? {} : { accessStartsAt: optionalEpoch(access?.startsAt) },
-      ...optionalEpoch(access?.endsAt) === void 0 ? {} : { accessEndsAt: optionalEpoch(access?.endsAt) },
-      cancelAtPeriodEnd: record.cancelAtPeriodEnd === true,
-      fiveHour: meterWindow(meters?.fiveHour),
-      week: meterWindow(meters?.week),
-      month: meterWindow(meters?.month),
-      fetchedAt: Date.now()
-    };
-  }
   function validateRequestLogPage(data) {
     if (!data || typeof data !== "object") {
       throw new ApiError("contract", "Request log response was not an object.");
@@ -562,125 +513,6 @@
     "tabs.charts": "趋势图",
     "tabs.requests": "请求日志",
     "tabs.data": "同步与数据",
-    "tabs.forecast": "用量预测",
-    "badge.beta": "Beta",
-    "data.experimentalTitle": "实验性功能",
-    "data.experimentalForecast": "启用用量预测（Beta）",
-    "data.experimentalForecastHint": "根据本地请求记录和 OpenCode Go 价格表，预测 5 小时、每周和每月限额的使用情况，并估算未来 24 小时用量。预测结果仅供估算，不改变官方用量限制。",
-    "data.experimentalForecastNote": "开启后才会读取全部本地历史并请求 OpenCode Go 用量限制状态。",
-    "forecast.loading": "正在计算用量预测…",
-    "forecast.error": "无法加载用量预测：{error}",
-    "forecast.retry": "重试",
-    "forecast.empty": "暂无可预测的请求记录",
-    "forecast.emptyHint": "先同步本地请求记录，或调整模型、提供商和成员 / 服务账号筛选。",
-    "forecast.noGo": "未检测到有效的 OpenCode Go 订阅，当前使用本地窗口估算。",
-    "forecast.rangeIgnored": "预测按用量窗口计算，不使用上方时间范围。",
-    "forecast.noAggregate": "不同模型的用量限制互相独立，不合计已用百分比。",
-    "forecast.riskiest": "风险最高模型",
-    "forecast.riskiestHelpHead": "什么是“风险最高模型”？",
-    "forecast.riskiestHelpWindow": "最高风险窗口",
-    "forecast.riskiestHelpWindowValue": "{window}，p90 {value}",
-    "forecast.riskiestHelpFooter": "“风险最高模型”是 5 小时、每周、每月三个窗口中最高 p90 预计利用率最大的模型。系统先为每个模型取三个窗口中的最高 p90 值作为风险分，再在已有用量的模型中选择风险分最高者。例如 A 模型每周最高为 70%，B 模型 5 小时最高为 90%，则 B 是风险最高模型。",
-    "forecast.selectedModel": "当前模型",
-    "forecast.overviewTitle": "用量预测",
-    "forecast.summary": "{model} 的用量与限额概览",
-    "forecast.windowFiveHour": "5 小时",
-    "forecast.window24h": "未来 24 小时",
-    "forecast.windowWeek": "每周",
-    "forecast.windowMonth": "每月",
-    "forecast.cardFiveHour": "到 5 小时重置时预计累计用量",
-    "forecast.card24h": "未来 24 小时预计新增用量",
-    "forecast.cardWeek": "到每周重置时预计累计用量",
-    "forecast.cardMonth": "到每月重置时预计累计用量",
-    "forecast.used": "已用 {value}",
-    "forecast.projected": "预计 {value}",
-    "forecast.p90Short": "p90 {value}",
-    "forecast.remaining": "重置时预计剩余 {value}",
-    "forecast.hitAt": "预计 {time} 达到限额",
-    "forecast.noHit": "预计不会提前达到限额",
-    "forecast.windowNotStarted": "首次使用后开始",
-    "forecast.unlimited": "无上限",
-    "forecast.unknown": "未知",
-    "forecast.unpriced": "有 {n} 条请求未匹配价格",
-    "forecast.noQuotaData": "该模型没有可用的每月限额数据",
-    "forecast.confidence": "置信度：{value}",
-    "forecast.confidenceHigh": "高",
-    "forecast.confidenceMedium": "中",
-    "forecast.confidenceLow": "低",
-    "forecast.sourceOfficial": "窗口时间来自 OpenCode Go 用量限制状态",
-    "forecast.sourceEstimated": "窗口时间为本地估算",
-    "forecast.chartTitle": "按百分比预测",
-    "forecast.chartAria": "{window}用量预测曲线",
-    "forecast.chartHistory": "历史累计",
-    "forecast.chartP50": "预测中位数（p50）",
-    "forecast.chartP10": "预测下界（p10）",
-    "forecast.chartP90": "预测上界（p90）",
-    "forecast.legendHistory": "历史累计",
-    "forecast.legendForecast": "预测 p50",
-    "forecast.legendBand": "p10–p90 区间",
-    "forecast.legendNow": "当前时刻",
-    "forecast.legendReset": "限额重置（5 小时 / 每周 / 每月）",
-    "forecast.tableTitle": "模型用量与限额明细",
-    "forecast.table.model": "模型",
-    "forecast.table.monthlyLimit": "每月上限",
-    "forecast.table.fiveHour": "5 小时已用/上限",
-    "forecast.table.week": "每周已用/上限",
-    "forecast.table.month": "每月已用/上限",
-    "forecast.table.next24h": "未来 24 小时预测",
-    "forecast.table.weekRemaining": "每周重置时剩余",
-    "forecast.table.monthRemaining": "每月重置时剩余",
-    "forecast.table.actions": "选择模型",
-    "forecast.absolute": "限额金额",
-    "forecast.p10p50p90": "p10 {p10} · p50 {p50} · p90 {p90}",
-    "forecast.resetAt": "重置时间：{time}",
-    "forecast.asOf": "计算于 {time}",
-    "forecast.statusFailed": "OpenCode Go 状态请求失败，已使用本地窗口估算。",
-    "forecast.reasonNoStatus": "未获取官方窗口时间",
-    "forecast.reasonShortHistory": "本地历史不足 24 小时",
-    "forecast.reasonGap": "本地历史存在同步缺口",
-    "forecast.reasonStalePricing": "价格缓存已过期",
-    "forecast.reasonUnpriced": "部分请求未能匹配价格",
-    "forecast.tooltipAbsolute": "{window}：{value}",
-    "forecast.percentOfMonth": "占每月限额的 {value}",
-    "forecast.crosses": "跨越 {n} 个限额重置点",
-    "forecast.noCross": "不跨越限额重置点",
-    "forecast.percentOfWindow": "占该窗口限额的 {value}",
-    "forecast.modelSelect": "选择预测模型",
-    "forecast.noModels": "没有可用于预测的 OpenCode Go 模型",
-    "forecast.noConsumedModels": "当前没有产生用量消耗的模型",
-    "forecast.usedLabel": "已用",
-    "forecast.projectedLabel": "预计（p50）",
-    "forecast.p90Label": "风险上界（p90）",
-    "forecast.absoluteLabel": "限额金额",
-    "forecast.resetLabel": "重置时间",
-    "forecast.forecastEndLabel": "预测终点",
-    "forecast.hitLabel": "预计达到限额时间",
-    "forecast.tooltipPercentMeaning": "百分比表示当前窗口的已用或预计用量占该窗口限额的比例。",
-    "forecast.explainMonthlyArrival": "届时月额度消耗累计约 {value}",
-    "forecast.explainHistory": "该时间点已累计用量 {value}",
-    "forecast.explainPoint": "该时间点预计累计用量 {value}",
-    "forecast.explain24hToPoint": "从预测起点到该时间点，预计新增用量占每月限额的 {value}；届时每月累计约 {arrival}",
-    "forecast.tooltip24hMeaning": "百分比表示未来 24 小时预测用量占每月限额的比例。",
-    "forecast.info": "预测说明",
-    "forecast.infoHead": "如何阅读用量预测",
-    "forecast.infoHistory": "历史实线",
-    "forecast.infoHistoryDesc": "窗口内已经发生的累计用量",
-    "forecast.infoForecast": "预测虚线",
-    "forecast.infoForecastDesc": "p50 中位数预测",
-    "forecast.infoBand": "预测区间",
-    "forecast.infoBandDesc": "p10–p90 阴影表示预测的不确定范围",
-    "forecast.infoMarkers": "时间虚线",
-    "forecast.infoMarkersDesc": "标记当前时刻，以及图表时间范围内的 5 小时、每周和每月限额重置点",
-    "forecast.markerNow": "现在",
-    "forecast.markerFiveHour": "5 小时限额重置",
-    "forecast.markerWeek": "每周限额重置",
-    "forecast.markerMonth": "每月限额重置",
-    "forecast.infoMethod": "预测方法",
-    "forecast.infoMethodDesc": "短期使用最近 15 分钟与 60 分钟速率加权，并叠加同星期时段周期和受限趋势",
-    "forecast.infoFooter": "未来 24 小时以每月限额为分母；预测仅供估算，不改变官方用量限制。",
-    "log.forecastUpdated": "用量预测已更新：{n} 个模型",
-    "log.forecastFailed": "用量预测失败：{error}",
-    "log.goStatusFailed": "OpenCode Go 状态读取失败：{error}",
     "range.1h": "近 1 小时",
     "range.5h": "近 5 小时",
     "range.24h": "近 24 小时",
@@ -865,9 +697,7 @@
     "common.notAvailable": "暂无",
     "metric.tpsUnit": "Token/s",
     "metric.costPerRequest": "≈ {value} / 请求",
-    "app.noWorkspace": "未选择工作区",
-    "forecast.refreshing": "正在更新用量预测…",
-    "forecast.refreshFailed": "用量预测刷新失败，继续显示上次结果：{error}"
+    "app.noWorkspace": "未选择工作区"
   };
   var en = {
     "app.title": "OpenCodeGo Dashboard Assistant",
@@ -879,125 +709,6 @@
     "tabs.charts": "Charts",
     "tabs.requests": "Request logs",
     "tabs.data": "Sync & Data",
-    "tabs.forecast": "Usage forecast",
-    "badge.beta": "Beta",
-    "data.experimentalTitle": "Experimental",
-    "data.experimentalForecast": "Enable usage forecast (Beta)",
-    "data.experimentalForecastHint": "Forecast 5-hour, weekly, and monthly usage limits from local request records and OpenCode Go pricing, and estimate the next 24 hours of usage. Results are estimates and never change official usage limits.",
-    "data.experimentalForecastNote": "Only loading the forecast loads the full local history and requests OpenCode Go usage limit status.",
-    "forecast.loading": "Calculating usage forecast…",
-    "forecast.error": "Could not load usage forecast: {error}",
-    "forecast.retry": "Retry",
-    "forecast.empty": "No forecastable request records yet",
-    "forecast.emptyHint": "Sync local records first, or adjust the model, provider, and member / service account filters.",
-    "forecast.noGo": "No active OpenCode Go subscription was detected. Local window estimates are being used.",
-    "forecast.rangeIgnored": "Forecasts follow usage windows and ignore the range selector above.",
-    "forecast.noAggregate": "Model usage limits are independent. Usage is never summed across models.",
-    "forecast.riskiest": "Highest-risk model",
-    "forecast.riskiestHelpHead": "What does “Highest-risk model” mean?",
-    "forecast.riskiestHelpWindow": "Highest-risk window",
-    "forecast.riskiestHelpWindowValue": "{window}, p90 {value}",
-    "forecast.riskiestHelpFooter": "The highest-risk model has the largest peak p90 projected utilization across the 5-hour, weekly, and monthly windows. Each model first uses its highest p90 value across those windows as its risk score, then the model with the highest score is selected. For example, if model A peaks at 70% weekly and model B at 90% for the 5-hour window, model B is the highest-risk model.",
-    "forecast.selectedModel": "Selected model",
-    "forecast.overviewTitle": "Usage forecast",
-    "forecast.summary": "Usage and limit outlook for {model}",
-    "forecast.windowFiveHour": "5-hour",
-    "forecast.window24h": "Next 24 hours",
-    "forecast.windowWeek": "Weekly",
-    "forecast.windowMonth": "Monthly",
-    "forecast.cardFiveHour": "Projected cumulative usage by the 5-hour reset",
-    "forecast.card24h": "Projected new usage over the next 24 hours",
-    "forecast.cardWeek": "Projected cumulative usage by the weekly reset",
-    "forecast.cardMonth": "Projected cumulative usage by the monthly reset",
-    "forecast.used": "Used {value}",
-    "forecast.projected": "Projected {value}",
-    "forecast.p90Short": "p90 {value}",
-    "forecast.remaining": "Projected remaining at reset {value}",
-    "forecast.hitAt": "Projected to reach the limit at {time}",
-    "forecast.noHit": "Not projected to reach the limit early",
-    "forecast.windowNotStarted": "Starts after first use",
-    "forecast.unlimited": "Unlimited",
-    "forecast.unknown": "Unknown",
-    "forecast.unpriced": "Unpriced requests: {n}",
-    "forecast.noQuotaData": "No monthly limit data is available for this model",
-    "forecast.confidence": "Confidence: {value}",
-    "forecast.confidenceHigh": "High",
-    "forecast.confidenceMedium": "Medium",
-    "forecast.confidenceLow": "Low",
-    "forecast.sourceOfficial": "Window times from OpenCode Go usage limit status",
-    "forecast.sourceEstimated": "Window times are local estimates",
-    "forecast.chartTitle": "Percentage forecast",
-    "forecast.chartAria": "{window} usage forecast chart",
-    "forecast.chartHistory": "Historical cumulative",
-    "forecast.chartP50": "Forecast median (p50)",
-    "forecast.chartP10": "Forecast lower bound (p10)",
-    "forecast.chartP90": "Forecast upper bound (p90)",
-    "forecast.legendHistory": "Historical cumulative",
-    "forecast.legendForecast": "Forecast p50",
-    "forecast.legendBand": "p10–p90 range",
-    "forecast.legendNow": "Current time",
-    "forecast.legendReset": "Usage limit reset (5-hour / weekly / monthly)",
-    "forecast.tableTitle": "Model usage and limits",
-    "forecast.table.model": "Model",
-    "forecast.table.monthlyLimit": "Monthly limit",
-    "forecast.table.fiveHour": "5-hour used / limit",
-    "forecast.table.week": "Weekly used / limit",
-    "forecast.table.month": "Monthly used / limit",
-    "forecast.table.next24h": "24-hour forecast",
-    "forecast.table.weekRemaining": "Remaining at weekly reset",
-    "forecast.table.monthRemaining": "Remaining at monthly reset",
-    "forecast.table.actions": "Select model",
-    "forecast.absolute": "Limit amount",
-    "forecast.p10p50p90": "p10 {p10} · p50 {p50} · p90 {p90}",
-    "forecast.resetAt": "Resets: {time}",
-    "forecast.asOf": "Calculated {time}",
-    "forecast.statusFailed": "The OpenCode Go status request failed. Local window estimates are being used.",
-    "forecast.reasonNoStatus": "Official window times are unavailable",
-    "forecast.reasonShortHistory": "Local history is shorter than 24 hours",
-    "forecast.reasonGap": "Local history has a sync gap",
-    "forecast.reasonStalePricing": "The pricing cache is stale",
-    "forecast.reasonUnpriced": "Some requests could not be priced",
-    "forecast.tooltipAbsolute": "{window}: {value}",
-    "forecast.percentOfMonth": "{value} of the monthly limit",
-    "forecast.crosses": "Crosses {n} limit reset points",
-    "forecast.noCross": "No limit reset points crossed",
-    "forecast.percentOfWindow": "{value} of this window’s limit",
-    "forecast.modelSelect": "Select forecast model",
-    "forecast.noModels": "No OpenCode Go models are available for forecasting",
-    "forecast.noConsumedModels": "No models have consumed usage yet",
-    "forecast.usedLabel": "Used",
-    "forecast.projectedLabel": "Projected (p50)",
-    "forecast.p90Label": "Risk upper bound (p90)",
-    "forecast.absoluteLabel": "Limit amount",
-    "forecast.resetLabel": "Reset time",
-    "forecast.forecastEndLabel": "Forecast end",
-    "forecast.hitLabel": "Projected limit time",
-    "forecast.tooltipPercentMeaning": "The percentage is current or projected usage divided by this window’s limit.",
-    "forecast.explainMonthlyArrival": "Monthly usage is projected to reach about {value} by then.",
-    "forecast.explainHistory": "Cumulative usage at this time: {value}",
-    "forecast.explainPoint": "Projected cumulative usage at this time: {value}",
-    "forecast.explain24hToPoint": "From the forecast start to this time, projected new usage is {value} of the monthly limit; monthly usage would reach about {arrival}",
-    "forecast.tooltip24hMeaning": "The percentage is projected usage over the next 24 hours divided by the monthly limit.",
-    "forecast.info": "Forecast help",
-    "forecast.infoHead": "How to read the usage forecast",
-    "forecast.infoHistory": "Historical line",
-    "forecast.infoHistoryDesc": "Cumulative usage that has already occurred in this window",
-    "forecast.infoForecast": "Forecast line",
-    "forecast.infoForecastDesc": "Median p50 projection for the rest of the window",
-    "forecast.infoBand": "Forecast interval",
-    "forecast.infoBandDesc": "The p10–p90 shaded range shows forecast uncertainty",
-    "forecast.infoMarkers": "Time markers",
-    "forecast.infoMarkersDesc": "Mark the current time and any 5-hour, weekly, or monthly limit reset points within the chart range",
-    "forecast.markerNow": "Now",
-    "forecast.markerFiveHour": "5-hour limit reset",
-    "forecast.markerWeek": "Weekly limit reset",
-    "forecast.markerMonth": "Monthly limit reset",
-    "forecast.infoMethod": "Method",
-    "forecast.infoMethodDesc": "Short-term 15/60-minute weighted rate with weekday-hour seasonality and a capped trend",
-    "forecast.infoFooter": "The next-24-hours view uses the monthly limit as its denominator. Forecasts are estimates and never change official usage limits.",
-    "log.forecastUpdated": "Usage forecast updated for {n} models",
-    "log.forecastFailed": "Usage forecast failed: {error}",
-    "log.goStatusFailed": "OpenCode Go status lookup failed: {error}",
     "range.1h": "Last hour",
     "range.5h": "Last 5 hours",
     "range.24h": "Last 24 hours",
@@ -1182,9 +893,7 @@
     "common.notAvailable": "N/A",
     "metric.tpsUnit": "tok/s",
     "metric.costPerRequest": "≈ {value} / request",
-    "app.noWorkspace": "No Workspace selected",
-    "forecast.refreshing": "Updating usage forecast…",
-    "forecast.refreshFailed": "Usage forecast refresh failed; showing the previous result: {error}"
+    "app.noWorkspace": "No Workspace selected"
   };
   var dictionaries = { zh, en };
   function detectLanguage(locale) {
@@ -1270,7 +979,6 @@
   var RANGE_STORAGE_KEY = "range";
   var LANGUAGE_STORAGE_KEY = "language";
   var PANEL_STATE_KEY = "panelState";
-  var EXPERIMENTAL_FORECAST_KEY = "experimentalForecast";
 
   // src/records.ts
   var OUTCOMES = /* @__PURE__ */ new Set(["succeeded", "failed", "rejected", "cancelled"]);
@@ -1983,7 +1691,7 @@
   // src/pricing.ts
   var GO_PRICING_URL = "https://opencode.ai/v2/docs/console/go/";
   var GO_PRICING_CACHE_KEY = "pricing:opencode-go";
-  var GO_PRICING_SCHEMA_VERSION = 2;
+  var GO_PRICING_SCHEMA_VERSION = 1;
   var GO_PRICING_TTL_MS = 3 * 24 * 60 * 60 * 1e3;
   var TOKENS_PER_PRICE_UNIT = 1e6;
   function normalized(value) {
@@ -1991,10 +1699,6 @@
   }
   function tableHeaders(table) {
     return [...table.querySelectorAll("thead th")].map((cell) => normalized(cell.textContent ?? ""));
-  }
-  function isPricingTable(table) {
-    const headers = tableHeaders(table);
-    return headers.includes("model") && headers.includes("input") && headers.includes("output") && headers.includes("cached read") && headers.includes("cached write") && headers.includes("monthly limit");
   }
   function parsePrice(value) {
     const text2 = value.replace(/,/g, "").trim();
@@ -2004,11 +1708,6 @@
     if (!match) return null;
     const amount = Number(match[0]);
     return Number.isFinite(amount) && amount >= 0 ? amount : null;
-  }
-  function parseMonthlyLimit(cell) {
-    const strong = [...cell.querySelectorAll("strong")].at(-1)?.textContent ?? cell.textContent ?? "";
-    if (/unlimited|free/i.test(strong)) return null;
-    return parsePrice(strong);
   }
   function parseContextMarker(label) {
     let displayName = label;
@@ -2033,18 +1732,18 @@
     }
     return { displayName, maxContextTokens, minContextTokens, period };
   }
-  function emptyQuotaLimits() {
-    return { go: {}, "go-plus": {} };
-  }
   function parseGoPricingHtml(html) {
     const document2 = new DOMParser().parseFromString(html, "text/html");
     const tables = [...document2.querySelectorAll("table")];
-    const pricingTables = tables.filter(isPricingTable);
+    const pricingTable = tables.find((table) => {
+      const headers = tableHeaders(table);
+      return headers.includes("model") && headers.includes("input") && headers.includes("output") && headers.includes("cached read") && headers.includes("cached write");
+    });
     const endpointTable = tables.find((table) => {
       const headers = tableHeaders(table);
       return headers.includes("model") && headers.includes("model id");
     });
-    if (!pricingTables.length || !endpointTable) {
+    if (!pricingTable || !endpointTable) {
       throw new Error("Go pricing tables were not found.");
     }
     const modelIDs = /* @__PURE__ */ new Map();
@@ -2055,63 +1754,35 @@
       const modelID = (cells[1].textContent ?? "").trim();
       if (name && modelID) modelIDs.set(name, modelID);
     }
-    const planTables = /* @__PURE__ */ new Map();
-    for (const panel2 of [...document2.querySelectorAll("[data-plan-panel]")]) {
-      const plan = panel2.dataset.planPanel;
-      if (plan !== "go" && plan !== "go-plus") continue;
-      const table = [...panel2.querySelectorAll("table")].find((candidate) => isPricingTable(candidate));
-      if (table) planTables.set(plan, table);
-    }
-    const remaining = pricingTables.filter((table) => ![...planTables.values()].includes(table));
-    if (!planTables.has("go") && remaining.length) planTables.set("go", remaining.shift());
-    if (!planTables.has("go-plus") && remaining.length) planTables.set("go-plus", remaining.shift());
-    const quotaLimits = emptyQuotaLimits();
     const tiers = [];
-    const seenTiers = /* @__PURE__ */ new Set();
-    for (const [plan, pricingTable] of planTables) {
-      for (const row of [...pricingTable.querySelectorAll("tbody tr")]) {
-        const cells = [...row.querySelectorAll("td")];
-        if (cells.length < 6) continue;
-        const rawName = (cells[0].textContent ?? "").replace(/\s+/g, " ").trim();
-        const marker = parseContextMarker(rawName);
-        const modelID = modelIDs.get(normalized(marker.displayName));
-        if (!modelID) continue;
-        quotaLimits[plan][modelID] = parseMonthlyLimit(cells[5]);
-        if (plan !== "go") continue;
-        const input = parsePrice(cells[1].textContent ?? "");
-        const output = parsePrice(cells[2].textContent ?? "");
-        if (input === null || output === null) continue;
-        const tier = {
-          modelID,
-          displayName: marker.displayName,
-          input,
-          output,
-          cacheRead: parsePrice(cells[3].textContent ?? ""),
-          cacheWrite: parsePrice(cells[4].textContent ?? ""),
-          ...marker.maxContextTokens === void 0 ? {} : { maxContextTokens: marker.maxContextTokens },
-          ...marker.minContextTokens === void 0 ? {} : { minContextTokens: marker.minContextTokens },
-          ...marker.period === void 0 ? {} : { period: marker.period }
-        };
-        const key = [
-          tier.modelID,
-          tier.period ?? "",
-          tier.minContextTokens ?? "",
-          tier.maxContextTokens ?? "",
-          tier.input,
-          tier.output
-        ].join("|");
-        if (!seenTiers.has(key)) {
-          seenTiers.add(key);
-          tiers.push(tier);
-        }
-      }
+    for (const row of [...pricingTable.querySelectorAll("tbody tr")]) {
+      const cells = [...row.querySelectorAll("td")];
+      if (cells.length < 5) continue;
+      const rawName = (cells[0].textContent ?? "").replace(/\s+/g, " ").trim();
+      const marker = parseContextMarker(rawName);
+      const modelID = modelIDs.get(normalized(marker.displayName));
+      if (!modelID) continue;
+      const input = parsePrice(cells[1].textContent ?? "");
+      const output = parsePrice(cells[2].textContent ?? "");
+      if (input === null || output === null) continue;
+      tiers.push({
+        modelID,
+        displayName: marker.displayName,
+        input,
+        output,
+        cacheRead: parsePrice(cells[3].textContent ?? ""),
+        cacheWrite: parsePrice(cells[4].textContent ?? ""),
+        ...marker.maxContextTokens === void 0 ? {} : { maxContextTokens: marker.maxContextTokens },
+        ...marker.minContextTokens === void 0 ? {} : { minContextTokens: marker.minContextTokens },
+        ...marker.period === void 0 ? {} : { period: marker.period }
+      });
     }
     if (!tiers.length) throw new Error("No valid Go pricing rows were parsed.");
-    return { tiers, quotaLimits };
+    return tiers;
   }
   function isGoPricingCacheFresh(cache, now = Date.now()) {
     return Boolean(
-      cache && cache.schemaVersion === GO_PRICING_SCHEMA_VERSION && cache.tiers.length > 0 && cache.quotaLimits && now - cache.fetchedAt >= 0 && now - cache.fetchedAt < GO_PRICING_TTL_MS
+      cache && cache.schemaVersion === GO_PRICING_SCHEMA_VERSION && cache.tiers.length > 0 && now - cache.fetchedAt >= 0 && now - cache.fetchedAt < GO_PRICING_TTL_MS
     );
   }
   async function loadGoPricing(now = Date.now()) {
@@ -2127,13 +1798,12 @@
         headers: { Accept: "text/html" }
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const parsed = parseGoPricingHtml(await response.text());
+      const tiers = parseGoPricingHtml(await response.text());
       const pricing = {
         fetchedAt: now,
         source: GO_PRICING_URL,
         schemaVersion: GO_PRICING_SCHEMA_VERSION,
-        tiers: parsed.tiers,
-        quotaLimits: parsed.quotaLimits
+        tiers
       };
       await putMeta(GO_PRICING_CACHE_KEY, pricing);
       return { pricing, refreshed: true };
@@ -2174,18 +1844,6 @@
     if (!matching.length) return void 0;
     return matching.sort((a, b) => (a.maxContextTokens ?? Number.MAX_SAFE_INTEGER) - (b.maxContextTokens ?? Number.MAX_SAFE_INTEGER))[0];
   }
-  function quotaLimitsForModel(pricing, plan, modelID) {
-    if (!pricing) return void 0;
-    const id = normalizeGoModelID(modelID);
-    const limits = pricing.quotaLimits?.[plan];
-    if (!limits || !Object.prototype.hasOwnProperty.call(limits, id)) return void 0;
-    return limits[id];
-  }
-  function quotaUsdForRecord(record, tier) {
-    if (!tier) return null;
-    const cacheWriteTokens = record.cacheWriteTokens + record.cacheWrite1hTokens;
-    return record.inputTokens * tier.input / TOKENS_PER_PRICE_UNIT + record.outputTokens * tier.output / TOKENS_PER_PRICE_UNIT + record.cacheReadTokens * (tier.cacheRead ?? 0) / TOKENS_PER_PRICE_UNIT + cacheWriteTokens * (tier.cacheWrite ?? 0) / TOKENS_PER_PRICE_UNIT;
-  }
   function estimateModelCostBreakdown(records, model, tiers) {
     if (!tiers?.length) return null;
     let input = 0;
@@ -2219,354 +1877,8 @@
     };
   }
 
-  // src/forecast.ts
-  var MINUTE2 = 6e4;
-  var HOUR2 = 60 * MINUTE2;
-  var DAY2 = 24 * HOUR2;
-  var FIVE_MINUTES = 5 * MINUTE2;
-  var FIVE_HOURS = 5 * HOUR2;
-  var WEEK = 7 * DAY2;
-  var TWENTY_EIGHT_DAYS = 28 * DAY2;
-  function clamp2(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-  function bucketStart(timestamp, bucketMs) {
-    return Math.floor(timestamp / bucketMs) * bucketMs;
-  }
-  function sumEvents(events, from, to) {
-    let total = 0;
-    for (const event of events) {
-      if (event.at >= from && event.at < to) total += event.usd;
-    }
-    return total;
-  }
-  function utcWeekStart(timestamp) {
-    const date = new Date(timestamp);
-    const day = date.getUTCDay();
-    const offset = (day + 6) % 7;
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - offset);
-  }
-  function utcMonthStart(timestamp) {
-    const date = new Date(timestamp);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
-  }
-  function nextUtcMonth(timestamp) {
-    const date = new Date(timestamp);
-    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
-  }
-  function resolveWindows(now, status) {
-    const weekStart = status?.week.resetsAt !== void 0 ? status.week.resetsAt - WEEK : utcWeekStart(now);
-    const weekEnd = status?.week.resetsAt ?? weekStart + WEEK;
-    const monthStart = status?.accessStartsAt ?? (status?.month.resetsAt !== void 0 && status.month.resetsAt - 30 * DAY2 <= now ? status.month.resetsAt - 30 * DAY2 : utcMonthStart(now));
-    const monthEnd = status?.month.resetsAt ?? status?.accessEndsAt ?? nextUtcMonth(now);
-    return {
-      fiveHour: {
-        startsAt: status?.fiveHour.startsAt ?? (status?.active ? void 0 : now - FIVE_HOURS),
-        resetsAt: status?.fiveHour.resetsAt ?? (status?.active ? void 0 : now),
-        official: Boolean(status?.active && status.fiveHour.startsAt !== void 0 && status.fiveHour.resetsAt !== void 0)
-      },
-      week: {
-        startsAt: weekStart,
-        resetsAt: weekEnd,
-        official: Boolean(status?.active && status.week.resetsAt !== void 0)
-      },
-      month: {
-        startsAt: monthStart,
-        resetsAt: monthEnd,
-        official: Boolean(status?.active && (status.month.resetsAt !== void 0 || status.accessEndsAt !== void 0))
-      }
-    };
-  }
-  function slotKey(timestamp, bucketMs) {
-    const date = new Date(timestamp);
-    if (bucketMs >= DAY2) return String(date.getUTCDay());
-    if (bucketMs >= HOUR2) return `${date.getUTCDay()}:${date.getUTCHours()}`;
-    return `${date.getUTCDay()}:${date.getUTCHours()}:${Math.floor(date.getUTCMinutes() / 5)}`;
-  }
-  function createSeasonalStats(events, bucketMs, now) {
-    const from = now - TWENTY_EIGHT_DAYS;
-    const totals = /* @__PURE__ */ new Map();
-    const counts = /* @__PURE__ */ new Map();
-    let globalTotal = 0;
-    let bucketCount = 0;
-    for (let cursor = bucketStart(from, bucketMs); cursor <= now; cursor += bucketMs) {
-      const key = slotKey(cursor, bucketMs);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-      bucketCount += 1;
-    }
-    for (const event of events) {
-      if (event.at < from || event.at > now) continue;
-      const key = slotKey(event.at, bucketMs);
-      totals.set(key, (totals.get(key) ?? 0) + event.usd);
-      globalTotal += event.usd;
-    }
-    return { totals, counts, globalMean: bucketCount > 0 ? globalTotal / bucketCount : 0 };
-  }
-  function seasonalFactor(stats, at, bucketMs) {
-    if (stats.globalMean <= 0) return 1;
-    const key = slotKey(at, bucketMs);
-    const count = stats.counts.get(key) ?? 1;
-    const slotMean = (stats.totals.get(key) ?? 0) / count;
-    return clamp2((slotMean + 4 * stats.globalMean) / (5 * stats.globalMean), 0.25, 4);
-  }
-  function dailySpend(events, now) {
-    const today = bucketStart(now, DAY2);
-    const values = [];
-    for (let offset = 13; offset >= 0; offset -= 1) {
-      const start = today - offset * DAY2;
-      values.push(sumEvents(events, start, start + DAY2));
-    }
-    return values;
-  }
-  function trendFactor(events, at, now) {
-    const values = dailySpend(events, now);
-    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-    if (mean <= 0) return 1;
-    const meanX = (values.length - 1) / 2;
-    let numerator = 0;
-    let denominator = 0;
-    for (let index = 0; index < values.length; index += 1) {
-      const dx = index - meanX;
-      numerator += dx * (values[index] - mean);
-      denominator += dx * dx;
-    }
-    if (denominator === 0) return 1;
-    const slope = numerator / denominator / mean;
-    const dayOffset = Math.max(0, (at - now) / DAY2);
-    return clamp2(1 + slope * dayOffset, 0.75, 1.25);
-  }
-  function shortRatePerMs(events, now) {
-    const last15 = sumEvents(events, now - 15 * MINUTE2, now) / (15 * MINUTE2);
-    const last60 = sumEvents(events, now - HOUR2, now) / HOUR2;
-    const last24h = sumEvents(events, now - DAY2, now) / DAY2;
-    const latest = events.length ? events[events.length - 1].at : 0;
-    const activeSession = latest >= now - 15 * MINUTE2;
-    if (last60 > 0) return activeSession ? last15 * 0.7 + last60 * 0.3 : last15 * 0.35 + last60 * 0.65;
-    return last24h;
-  }
-  function dayRatePerMs(events, now) {
-    return sumEvents(events, now - 14 * DAY2, now) / (14 * DAY2);
-  }
-  function quantilesFor(key, confidence) {
-    const base = {
-      fiveHour: { q10: 0.75, q90: 1.35 },
-      next24h: { q10: 0.65, q90: 1.55 },
-      week: { q10: 0.5, q90: 1.7 },
-      month: { q10: 0.4, q90: 1.85 }
-    };
-    const widen = confidence === "high" ? 1 : confidence === "medium" ? 1.1 : 1.25;
-    const selected = base[key];
-    return {
-      q10: clamp2(1 - (1 - selected.q10) * widen, 0, 1),
-      q90: clamp2(1 + (selected.q90 - 1) * widen, 0, 2.5)
-    };
-  }
-  function assessConfidence(records, status, pricing, now, syncState, unpricedRequests) {
-    const reasons = [];
-    const historyStart = records.length ? Math.min(...records.map((record) => record.startedAt)) : now;
-    const historyHours = (now - historyStart) / HOUR2;
-    if (!status?.active) reasons.push("forecast.reasonNoStatus");
-    if (historyHours < 24) reasons.push("forecast.reasonShortHistory");
-    if (syncState?.gapDetected || syncState?.backfillComplete === false) reasons.push("forecast.reasonGap");
-    if (!isGoPricingCacheFresh(pricing, now)) reasons.push("forecast.reasonStalePricing");
-    if (records.length > 0 && unpricedRequests / records.length > 0.05) reasons.push("forecast.reasonUnpriced");
-    if (!reasons.length) return { confidence: "high", reasons };
-    if (historyHours < 6 || !status?.active && historyHours < 24) return { confidence: "low", reasons };
-    return { confidence: "medium", reasons };
-  }
-  function collectForecastBuckets(key, events, now, forecastStart, forecastEnd) {
-    if (forecastEnd <= forecastStart) return [];
-    const bucketMs = key === "fiveHour" ? FIVE_MINUTES : key === "next24h" ? HOUR2 : DAY2;
-    const shortRate = shortRatePerMs(events, now);
-    const dailyRate = dayRatePerMs(events, now);
-    const seasonal = createSeasonalStats(events, bucketMs, now);
-    const buckets = [];
-    let cursor = forecastStart;
-    while (cursor < forecastEnd) {
-      const next = Math.min(forecastEnd, bucketStart(cursor, bucketMs) + bucketMs);
-      const duration = Math.max(0, next - cursor);
-      const midpoint = cursor + duration / 2;
-      const season = seasonalFactor(seasonal, midpoint, bucketMs);
-      let base;
-      if (key === "week" || key === "month") {
-        base = dailyRate * duration * season * trendFactor(events, midpoint, now);
-      } else if (key === "next24h") {
-        const last6h = sumEvents(events, now - 6 * HOUR2, now) / (6 * HOUR2);
-        const last24h = sumEvents(events, now - DAY2, now) / DAY2;
-        base = (last6h * 0.5 + last24h * 0.5) * duration * season;
-      } else {
-        base = shortRate * duration * season;
-      }
-      buckets.push({ from: cursor, to: next, usd: Math.max(0, base) });
-      cursor = next;
-    }
-    return buckets;
-  }
-  function buildChart(key, events, chartStart, now, forecastEnd, usedUsd, future, q10, q90) {
-    const bucketMs = key === "fiveHour" ? FIVE_MINUTES : key === "next24h" ? HOUR2 : DAY2;
-    const points = [];
-    let actual = 0;
-    points.push({ at: chartStart, actualUsd: 0, p10Usd: null, p50Usd: null, p90Usd: null });
-    for (let cursor = bucketStart(chartStart, bucketMs); cursor < now; cursor += bucketMs) {
-      const end = Math.min(now, cursor + bucketMs);
-      if (end < chartStart) continue;
-      actual += sumEvents(events, Math.max(cursor, chartStart), end);
-      points.push({ at: end, actualUsd: actual, p10Usd: null, p50Usd: null, p90Usd: null });
-    }
-    if (!points.length || points[points.length - 1].at < now) {
-      points.push({ at: now, actualUsd: actual, p10Usd: null, p50Usd: null, p90Usd: null });
-    }
-    points.push({ at: now, actualUsd: null, p10Usd: usedUsd, p50Usd: usedUsd, p90Usd: usedUsd });
-    let cumulative = usedUsd;
-    for (const bucket of future) {
-      cumulative += bucket.usd;
-      points.push({ at: bucket.to, actualUsd: null, p10Usd: usedUsd + (cumulative - usedUsd) * q10, p50Usd: cumulative, p90Usd: usedUsd + (cumulative - usedUsd) * q90 });
-    }
-    if (points[points.length - 1].at < forecastEnd) {
-      points.push({ at: forecastEnd, actualUsd: null, p10Usd: points[points.length - 1].p10Usd, p50Usd: points[points.length - 1].p50Usd, p90Usd: points[points.length - 1].p90Usd });
-    }
-    return points;
-  }
-  function buildWindowForecast(key, events, now, bounds, limitUsd, confidence) {
-    const isNext24h = key === "next24h";
-    const windowStart = isNext24h ? now : bounds.startsAt;
-    const windowEnd = isNext24h ? now + DAY2 : bounds.resetsAt ?? (windowStart === void 0 ? void 0 : windowStart + (key === "fiveHour" ? FIVE_HOURS : key === "week" ? WEEK : 30 * DAY2));
-    const usedFrom = isNext24h ? now : windowStart ?? now;
-    const usedUsd = isNext24h ? 0 : sumEvents(events, usedFrom, now);
-    const forecastStart = isNext24h ? now : Math.max(now, windowStart ?? now);
-    const forecastEnd = windowEnd ?? now;
-    const future = collectForecastBuckets(key, events, now, forecastStart, forecastEnd);
-    const futureUsd = future.reduce((sum, bucket) => sum + bucket.usd, 0);
-    const { q10, q90 } = quantilesFor(key, confidence);
-    const p10Usd = usedUsd + futureUsd * q10;
-    const p50Usd = usedUsd + futureUsd;
-    const p90Usd = usedUsd + futureUsd * q90;
-    const ratio = (value) => limitUsd === null || limitUsd <= 0 ? null : value / limitUsd;
-    let hitAt;
-    if (limitUsd !== null && limitUsd > 0 && !isNext24h && p50Usd >= limitUsd) {
-      if (usedUsd >= limitUsd) hitAt = now;
-      else {
-        let cumulative = usedUsd;
-        for (const bucket of future) {
-          if (cumulative + bucket.usd >= limitUsd) {
-            const fraction = bucket.usd > 0 ? (limitUsd - cumulative) / bucket.usd : 0;
-            hitAt = bucket.from + Math.max(0, Math.min(1, fraction)) * (bucket.to - bucket.from);
-            break;
-          }
-          cumulative += bucket.usd;
-        }
-      }
-    }
-    const chartStart = isNext24h ? now - DAY2 : windowStart ?? now;
-    const chartEnd = isNext24h ? now + DAY2 : Math.max(now, forecastEnd);
-    return {
-      key,
-      usedUsd,
-      p10Usd,
-      p50Usd,
-      p90Usd,
-      limitUsd,
-      usedRatio: ratio(usedUsd),
-      p10Ratio: ratio(p10Usd),
-      p50Ratio: ratio(p50Usd),
-      p90Ratio: ratio(p90Usd),
-      remainingRatio: isNext24h || limitUsd === null || limitUsd <= 0 ? null : Math.max(0, 1 - p50Usd / limitUsd),
-      ...windowStart === void 0 ? {} : { startsAt: windowStart },
-      ...windowEnd === void 0 ? {} : { resetsAt: windowEnd },
-      ...hitAt === void 0 ? {} : { hitAt },
-      windowStarted: isNext24h || windowStart !== void 0 && windowStart <= now,
-      chart: buildChart(key, events, chartStart, now, chartEnd, usedUsd, future, q10, q90)
-    };
-  }
-  function buildQuotaForecast(options) {
-    const now = options.now ?? Date.now();
-    const plan = options.status?.product ?? "go";
-    const bounds = resolveWindows(now, options.status);
-    const filtered = options.records.filter((record) => matchesFilters(record, options.filters));
-    const groups = /* @__PURE__ */ new Map();
-    for (const record of filtered) {
-      if (record.provider && !["opencode", "opencode-go"].includes(record.provider.toLowerCase())) continue;
-      const model = record.model || record.requestedModel || "unknown";
-      const provider = record.provider || "";
-      const key = `${model}\0${provider}`;
-      let group = groups.get(key);
-      if (!group) {
-        group = { model, provider, displayName: model, records: [], events: [], unpricedRequests: 0 };
-        groups.set(key, group);
-      }
-      group.records.push(record);
-      const tier = selectPricingTier(options.pricing.tiers, record);
-      const usd = quotaUsdForRecord(record, tier);
-      if (usd === null) group.unpricedRequests += 1;
-      else {
-        group.events.push({ at: record.startedAt, usd });
-        group.displayName = tier?.displayName || group.displayName;
-      }
-    }
-    const models = [];
-    for (const group of groups.values()) {
-      group.events.sort((a, b) => a.at - b.at);
-      const consumedUsd = group.events.reduce((sum, event) => sum + event.usd, 0);
-      if (consumedUsd <= 0) continue;
-      const confidence = assessConfidence(
-        group.records,
-        options.status,
-        options.pricing,
-        now,
-        options.syncState,
-        group.unpricedRequests
-      );
-      const monthlyLimitUsd = quotaLimitsForModel(options.pricing, plan, group.model);
-      const limitKnown = monthlyLimitUsd !== void 0;
-      const finiteMonthly = monthlyLimitUsd === void 0 ? null : monthlyLimitUsd;
-      const fiveHourLimit = finiteMonthly === null ? null : finiteMonthly / 5;
-      const weekLimit = finiteMonthly === null ? null : finiteMonthly / 2;
-      const windows = {
-        fiveHour: buildWindowForecast("fiveHour", group.events, now, bounds.fiveHour, fiveHourLimit, confidence.confidence),
-        next24h: buildWindowForecast("next24h", group.events, now, { official: false }, finiteMonthly, confidence.confidence),
-        week: buildWindowForecast("week", group.events, now, bounds.week, weekLimit, confidence.confidence),
-        month: buildWindowForecast("month", group.events, now, bounds.month, finiteMonthly, confidence.confidence)
-      };
-      const riskCandidates = [
-        { key: "fiveHour", score: windows.fiveHour.p90Ratio ?? 0 },
-        { key: "week", score: windows.week.p90Ratio ?? 0 },
-        { key: "month", score: windows.month.p90Ratio ?? 0 }
-      ];
-      riskCandidates.sort((a, b) => b.score - a.score);
-      models.push({
-        model: group.model,
-        provider: group.provider,
-        displayName: group.displayName,
-        monthlyLimitUsd: finiteMonthly,
-        limitKnown,
-        windowLimits: { fiveHour: fiveHourLimit, week: weekLimit, month: finiteMonthly },
-        windows,
-        riskScore: riskCandidates[0].score,
-        riskWindow: riskCandidates[0].score > 0 ? riskCandidates[0].key : null,
-        pricedRequests: group.events.length,
-        unpricedRequests: group.unpricedRequests,
-        totalRequests: group.records.length,
-        confidence: confidence.confidence,
-        confidenceReasons: confidence.reasons
-      });
-    }
-    models.sort((a, b) => b.riskScore - a.riskScore || b.windows.month.p90Usd - a.windows.month.p90Usd || a.displayName.localeCompare(b.displayName));
-    const warnings = [];
-    if (!options.status?.active) warnings.push("forecast.reasonNoStatus");
-    if (options.statusError) warnings.push("forecast.statusFailed");
-    if (!isGoPricingCacheFresh(options.pricing, now)) warnings.push("forecast.reasonStalePricing");
-    return {
-      generatedAt: now,
-      plan,
-      officialStatus: Boolean(options.status?.active),
-      models,
-      riskiest: models.find((model) => model.monthlyLimitUsd !== null && model.windows.month.p90Usd > 0) ?? models[0],
-      warnings
-    };
-  }
-
   // src/version.ts
-  var APP_VERSION = "1.3.0";
+  var APP_VERSION = "1.4.0";
 
   // src/ui/charts.ts
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -2574,9 +1886,9 @@
   var HEIGHT = 210;
   var PAD = { left: 48, right: 14, top: 18, bottom: 28 };
   function svgElement(tag, attrs = {}) {
-    const node3 = document.createElementNS(SVG_NS, tag);
-    for (const [key, value] of Object.entries(attrs)) node3.setAttribute(key, String(value));
-    return node3;
+    const node2 = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attrs)) node2.setAttribute(key, String(value));
+    return node2;
   }
   function hideChartTooltip(tooltip) {
     if (!tooltip) return;
@@ -2929,642 +2241,6 @@
     renderPerformanceChart(container, buckets, language, tooltip, "tps");
   }
 
-  // src/ui/forecastPanel.ts
-  var WINDOW_KEYS = ["fiveHour", "next24h", "week", "month"];
-  var FORECAST_CHART_WIDTH = 760;
-  var FORECAST_CHART_HEIGHT = 260;
-  var FORECAST_CHART_MARGIN = { left: 44, right: 16, top: 16, bottom: 28 };
-  function node(tag, className = "", text2 = "") {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text2) element.textContent = text2;
-    return element;
-  }
-  function windowLabel(language, key) {
-    return t(language, `forecast.window${key === "fiveHour" ? "FiveHour" : key === "next24h" ? "24h" : key === "week" ? "Week" : "Month"}`);
-  }
-  function cardTitle(language, key) {
-    return t(language, `forecast.card${key === "fiveHour" ? "FiveHour" : key === "next24h" ? "24h" : key === "week" ? "Week" : "Month"}`);
-  }
-  function confidenceLabel(language, model) {
-    const key = model.confidence === "high" ? "forecast.confidenceHigh" : model.confidence === "medium" ? "forecast.confidenceMedium" : "forecast.confidenceLow";
-    return t(language, key);
-  }
-  function percentOrUnknown(value) {
-    return value === null ? "—" : formatPercent(value);
-  }
-  function absoluteWindow(window2) {
-    if (window2.limitUsd === null) return formatUsd(window2.p50Usd);
-    return `${formatUsd(window2.p50Usd)} / ${formatUsd(window2.limitUsd)}`;
-  }
-  function quantileTitle(window2, language) {
-    return t(language, "forecast.p10p50p90", {
-      p10: formatUsd(window2.p10Usd),
-      p50: formatUsd(window2.p50Usd),
-      p90: formatUsd(window2.p90Usd)
-    });
-  }
-  function resetText(language, window2, model) {
-    if (window2.key === "next24h") {
-      const now = Date.now();
-      const boundaries = [
-        model.windows.fiveHour.resetsAt,
-        model.windows.week.resetsAt,
-        model.windows.month.resetsAt
-      ].filter((value) => value !== void 0 && value > now && value <= now + 24 * 60 * 60 * 1e3);
-      return `${t(language, "forecast.percentOfMonth", { value: formatPercent(window2.p50Ratio) })} · ${boundaries.length ? t(language, "forecast.crosses", { n: boundaries.length }) : t(language, "forecast.noCross")}`;
-    }
-    if (!window2.windowStarted) return t(language, "forecast.windowNotStarted");
-    if (window2.hitAt !== void 0) return t(language, "forecast.hitAt", { time: formatRelative(window2.hitAt, Date.now(), language) });
-    if (window2.resetsAt !== void 0 && window2.remainingRatio !== null) {
-      return `${t(language, "forecast.remaining", { value: formatPercent(window2.remainingRatio) })} · ${t(language, "forecast.resetAt", { time: formatDateTime(window2.resetsAt) })}`;
-    }
-    return t(language, "forecast.noHit");
-  }
-  function chartValue(point, window2, key) {
-    const value = key === "actual" ? point.actualUsd : key === "p10" ? point.p10Usd : key === "p50" ? point.p50Usd : point.p90Usd;
-    if (value === null) return null;
-    if (window2.limitUsd === null || window2.limitUsd <= 0) return value;
-    return value / window2.limitUsd;
-  }
-  function svgPath(points) {
-    return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
-  }
-  function buildChart2(language, window2, model, windowKey) {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.classList.add("ocgo-forecast-chart");
-    svg.setAttribute("viewBox", `0 0 ${FORECAST_CHART_WIDTH} ${FORECAST_CHART_HEIGHT}`);
-    svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", t(language, "forecast.chartAria", { window: windowLabel(language, windowKey) }));
-    const points = window2.chart;
-    if (!points.length) return svg;
-    const margin = FORECAST_CHART_MARGIN;
-    const width = FORECAST_CHART_WIDTH - margin.left - margin.right;
-    const height = FORECAST_CHART_HEIGHT - margin.top - margin.bottom;
-    const xMin = points[0].at;
-    const xMax = points[points.length - 1].at;
-    const allValues = points.flatMap((point) => [chartValue(point, window2, "actual"), chartValue(point, window2, "p10"), chartValue(point, window2, "p50"), chartValue(point, window2, "p90")]).filter((value) => value !== null && Number.isFinite(value));
-    const valuesMax = Math.max(0, ...allValues);
-    const rawMax = Math.max(valuesMax * 1.1, window2.limitUsd === null ? 0.01 : 1);
-    const yMax = window2.limitUsd === null ? rawMax : valuesMax <= 1 ? 1 : Math.ceil(rawMax * 4) / 4;
-    const x = (value) => margin.left + (xMax === xMin ? 0 : (value - xMin) / (xMax - xMin) * width);
-    const y = (value) => margin.top + height - Math.max(0, Math.min(yMax, value)) / yMax * height;
-    for (let index = 0; index <= 4; index += 1) {
-      const value = yMax * index / 4;
-      const lineY = y(value);
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", String(margin.left));
-      line.setAttribute("x2", String(margin.left + width));
-      line.setAttribute("y1", String(lineY));
-      line.setAttribute("y2", String(lineY));
-      line.classList.add("ocgo-forecast-gridline");
-      svg.appendChild(line);
-      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      label.setAttribute("x", String(margin.left - 6));
-      label.setAttribute("y", String(lineY + 3));
-      label.setAttribute("text-anchor", "end");
-      label.classList.add("ocgo-forecast-axis-label");
-      label.textContent = window2.limitUsd === null ? formatUsd(value) : formatPercent(value, 0);
-      svg.appendChild(label);
-    }
-    const actual = points.map((point) => ({ value: chartValue(point, window2, "actual"), x: x(point.at) })).filter((point) => point.value !== null).map((point) => ({ x: point.x, y: y(point.value) }));
-    if (actual.length > 1) {
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", svgPath(actual));
-      path.classList.add("ocgo-forecast-actual");
-      svg.appendChild(path);
-    }
-    const futurePoints = points.filter((point) => point.p50Usd !== null);
-    const p50 = futurePoints.map((point) => ({ x: x(point.at), y: y(chartValue(point, window2, "p50") ?? 0) }));
-    if (p50.length > 1) {
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", svgPath(p50));
-      path.classList.add("ocgo-forecast-p50");
-      svg.appendChild(path);
-    }
-    const band = futurePoints.map((point) => ({ x: x(point.at), top: y(chartValue(point, window2, "p90") ?? 0), bottom: y(chartValue(point, window2, "p10") ?? 0) })).filter((point) => Number.isFinite(point.top) && Number.isFinite(point.bottom));
-    if (band.length > 1) {
-      const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-      polygon.setAttribute("points", [...band.map((point) => `${point.x.toFixed(2)},${point.top.toFixed(2)}`), ...band.slice().reverse().map((point) => `${point.x.toFixed(2)},${point.bottom.toFixed(2)}`)].join(" "));
-      polygon.classList.add("ocgo-forecast-band");
-      svg.appendChild(polygon);
-    }
-    const addMarker = (at, label, isNow) => {
-      const markerX = x(at);
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", String(markerX));
-      line.setAttribute("x2", String(markerX));
-      line.setAttribute("y1", String(margin.top));
-      line.setAttribute("y2", String(margin.top + height));
-      line.classList.add(isNow ? "ocgo-forecast-now" : "ocgo-forecast-boundary");
-      line.setAttribute("data-marker", isNow ? "now" : "reset");
-      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = `${label} · ${formatDateTime(at)}`;
-      line.appendChild(title);
-      svg.appendChild(line);
-    };
-    const now = Date.now();
-    if (now >= xMin && now <= xMax) addMarker(now, t(language, "forecast.markerNow"), true);
-    const resetMarkers = [
-      [model.windows.fiveHour.resetsAt, "forecast.markerFiveHour"],
-      [model.windows.week.resetsAt, "forecast.markerWeek"],
-      [model.windows.month.resetsAt, "forecast.markerMonth"]
-    ];
-    for (const [at, key] of resetMarkers) {
-      if (at !== void 0 && at >= xMin && at <= xMax) addMarker(at, t(language, key), false);
-    }
-    const axisStart = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    axisStart.setAttribute("x", String(margin.left));
-    axisStart.setAttribute("y", String(FORECAST_CHART_HEIGHT - 8));
-    axisStart.setAttribute("text-anchor", "start");
-    axisStart.classList.add("ocgo-forecast-axis-label");
-    axisStart.textContent = formatDateTime(xMin);
-    svg.appendChild(axisStart);
-    const axisEnd = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    axisEnd.setAttribute("x", String(margin.left + width));
-    axisEnd.setAttribute("y", String(FORECAST_CHART_HEIGHT - 8));
-    axisEnd.setAttribute("text-anchor", "end");
-    axisEnd.classList.add("ocgo-forecast-axis-label");
-    axisEnd.textContent = formatDateTime(xMax);
-    svg.appendChild(axisEnd);
-    return svg;
-  }
-  var ForecastPanel = class {
-    root;
-    panel;
-    tooltip;
-    windowKey = "fiveHour";
-    result;
-    selectedModel = "";
-    language = "en";
-    onSelectModel;
-    onRetry;
-    constructor(root, panel2) {
-      this.root = root;
-      this.panel = panel2;
-    }
-    setTooltip(tooltip) {
-      this.tooltip = tooltip;
-    }
-    setBusy(busy, language) {
-      this.root.setAttribute("aria-busy", String(busy));
-      this.root.toggleAttribute("data-refreshing", busy);
-      if (busy) this.root.setAttribute("aria-label", t(language, "forecast.refreshing"));
-      else this.root.removeAttribute("aria-label");
-    }
-    renderSummaryCards(result, selectedModel, language) {
-      this.result = result;
-      this.selectedModel = selectedModel;
-      this.language = language;
-      hideChartTooltip(this.tooltip);
-      this.root.replaceChildren();
-      const model = result.models.find((item) => item.model === selectedModel) ?? result.riskiest ?? result.models[0];
-      if (model) this.root.appendChild(this.buildCards(model));
-    }
-    renderLoading(language) {
-      hideChartTooltip(this.tooltip);
-      this.root.replaceChildren(this.state(t(language, "forecast.loading"), "ocgo-note"));
-    }
-    renderError(language, message, onRetry) {
-      hideChartTooltip(this.tooltip);
-      this.root.replaceChildren();
-      const box = node("div", "ocgo-forecast-state");
-      box.append(node("div", "ocgo-section-title", t(language, "forecast.error", { error: message })));
-      const retry = node("button", "ocgo-btn", t(language, "forecast.retry"));
-      retry.type = "button";
-      retry.addEventListener("click", onRetry);
-      box.appendChild(retry);
-      this.root.appendChild(box);
-    }
-    renderEmpty(language, title = t(language, "forecast.empty"), hint = t(language, "forecast.emptyHint")) {
-      hideChartTooltip(this.tooltip);
-      this.root.replaceChildren();
-      const box = node("div", "ocgo-forecast-state");
-      box.append(node("div", "ocgo-section-title", title), node("div", "ocgo-note", hint));
-      this.root.appendChild(box);
-    }
-    render(result, selectedModel, language, onSelectModel, onRetry) {
-      this.result = result;
-      this.selectedModel = selectedModel;
-      this.language = language;
-      this.onSelectModel = onSelectModel;
-      this.onRetry = onRetry;
-      hideChartTooltip(this.tooltip);
-      this.root.replaceChildren();
-      if (!result.models.length) {
-        this.renderEmpty(language);
-        return;
-      }
-      const model = result.models.find((item) => item.model === selectedModel) ?? result.riskiest ?? result.models[0];
-      if (!model) {
-        this.renderEmpty(language);
-        return;
-      }
-      this.root.appendChild(this.renderHeader(result, model));
-      this.root.appendChild(this.buildCards(model));
-      this.root.appendChild(this.renderChartSection(result, model));
-      this.root.appendChild(this.renderTable(result, model));
-      this.root.appendChild(this.renderFooter(result, model));
-    }
-    state(message, className) {
-      const box = node("div", "ocgo-forecast-state");
-      box.appendChild(node("div", className, message));
-      return box;
-    }
-    renderHeader(result, model) {
-      const header = node("div", "ocgo-forecast-header");
-      const text2 = node("div");
-      text2.append(
-        node("div", "ocgo-section-title", t(this.language, "forecast.summary", { model: model.displayName }))
-      );
-      if (!this.selectedModel && result.riskiest?.model === model.model) {
-        const tightest = node("span", "ocgo-forecast-source ocgo-forecast-help", t(this.language, "forecast.riskiest"));
-        tightest.tabIndex = 0;
-        tightest.setAttribute("aria-label", t(this.language, "forecast.riskiestHelpHead"));
-        this.bindRiskiestTooltip(tightest, model);
-        text2.appendChild(tightest);
-      }
-      text2.appendChild(node("div", "ocgo-note", t(this.language, "forecast.noAggregate")));
-      const meta = node("div", "ocgo-forecast-meta");
-      meta.append(
-        node("span", "ocgo-forecast-source", t(this.language, result.officialStatus ? "forecast.sourceOfficial" : "forecast.sourceEstimated")),
-        node("span", "ocgo-forecast-confidence", t(this.language, "forecast.confidence", { value: confidenceLabel(this.language, model) }))
-      );
-      header.append(text2, meta);
-      if (!result.officialStatus || result.warnings.includes("forecast.statusFailed")) {
-        const warning = node("div", "ocgo-warning", t(this.language, result.warnings.includes("forecast.statusFailed") ? "forecast.statusFailed" : "forecast.noGo"));
-        header.appendChild(warning);
-      }
-      return header;
-    }
-    buildCards(model) {
-      const grid = node("div", "ocgo-forecast-cards");
-      for (const key of WINDOW_KEYS) {
-        const window2 = model.windows[key];
-        const card = node("div", "ocgo-card ocgo-forecast-card");
-        const ratio = key === "next24h" ? window2.p50Ratio : window2.p50Ratio;
-        const main = !model.limitKnown ? t(this.language, "forecast.unknown") : model.monthlyLimitUsd === null ? t(this.language, "forecast.unlimited") : percentOrUnknown(ratio);
-        const value = node("div", "ocgo-card-value", main);
-        this.bindValueTooltip(value, model, window2);
-        if (window2.p90Ratio !== null && window2.p90Ratio >= 1) value.classList.add("ocgo-danger-text");
-        const sub = node("div", "ocgo-card-sub");
-        if (!model.limitKnown) {
-          sub.textContent = t(this.language, "forecast.noQuotaData");
-        } else if (model.monthlyLimitUsd === null) {
-          sub.textContent = key === "next24h" ? `${formatUsd(window2.p50Usd)} · ${t(this.language, "forecast.unlimited")}` : formatUsd(window2.p50Usd);
-        } else {
-          const p90 = window2.p90Ratio === null ? "—" : formatPercent(window2.p90Ratio);
-          sub.textContent = `${absoluteWindow(window2)} · ${t(this.language, "forecast.p90Short", { value: p90 })}`;
-        }
-        card.append(node("div", "ocgo-card-label", cardTitle(this.language, key)), value, sub);
-        const detail = node("div", "ocgo-card-detail", resetText(this.language, window2, model));
-        detail.title = quantileTitle(window2, this.language);
-        card.appendChild(detail);
-        grid.appendChild(card);
-      }
-      return grid;
-    }
-    renderChartSection(result, model) {
-      const section = node("section", "ocgo-section ocgo-forecast-chart-section");
-      const head = node("div", "ocgo-section-head");
-      const titleGroup = node("div", "ocgo-forecast-chart-title");
-      titleGroup.appendChild(node("span", "", t(this.language, "forecast.chartTitle")));
-      const info = node("button", "ocgo-info-btn", "i");
-      info.type = "button";
-      info.title = t(this.language, "forecast.info");
-      info.setAttribute("aria-label", t(this.language, "forecast.info"));
-      this.bindInfoTooltip(info);
-      titleGroup.appendChild(info);
-      head.appendChild(titleGroup);
-      const controls = node("div", "ocgo-forecast-window-controls");
-      for (const key of WINDOW_KEYS) {
-        const button2 = node("button", `ocgo-btn ocgo-forecast-window-btn${key === this.windowKey ? " ocgo-active" : ""}`, windowLabel(this.language, key));
-        button2.type = "button";
-        button2.addEventListener("click", () => {
-          this.windowKey = key;
-          this.render(result, this.selectedModel, this.language, this.onSelectModel ?? (() => void 0), this.onRetry ?? (() => void 0));
-        });
-        controls.appendChild(button2);
-      }
-      head.appendChild(controls);
-      const chart = buildChart2(this.language, model.windows[this.windowKey], model, this.windowKey);
-      this.bindChartHover(chart, model, model.windows[this.windowKey]);
-      section.append(head, chart, this.renderChartLegend());
-      return section;
-    }
-    renderChartLegend() {
-      const legend = node("div", "ocgo-forecast-chart-legend");
-      const item = (label, swatchClass) => {
-        const wrapper = node("span", "ocgo-forecast-legend-item");
-        const swatch = node("span", `ocgo-forecast-legend-swatch ${swatchClass}`);
-        swatch.setAttribute("aria-hidden", "true");
-        wrapper.append(swatch, node("span", "", label));
-        return wrapper;
-      };
-      legend.append(
-        item(t(this.language, "forecast.legendHistory"), "ocgo-forecast-legend-actual"),
-        item(t(this.language, "forecast.legendForecast"), "ocgo-forecast-legend-p50"),
-        item(t(this.language, "forecast.legendBand"), "ocgo-forecast-legend-band"),
-        item(t(this.language, "forecast.legendNow"), "ocgo-forecast-legend-now"),
-        item(t(this.language, "forecast.legendReset"), "ocgo-forecast-legend-reset")
-      );
-      return legend;
-    }
-    chartValue(value, window2) {
-      return window2.limitUsd === null || window2.limitUsd <= 0 ? formatUsd(value) : formatPercent(value / window2.limitUsd);
-    }
-    bindChartHover(svg, model, window2) {
-      const points = window2.chart;
-      if (points.length < 2) return;
-      const margin = FORECAST_CHART_MARGIN;
-      const width = FORECAST_CHART_WIDTH - margin.left - margin.right;
-      const height = FORECAST_CHART_HEIGHT - margin.top - margin.bottom;
-      const xMin = points[0].at;
-      const xMax = points[points.length - 1].at;
-      if (xMax <= xMin) return;
-      const x = (value) => margin.left + (value - xMin) / (xMax - xMin) * width;
-      const band = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      band.classList.add("ocgo-forecast-hover-band");
-      band.setAttribute("y", String(margin.top));
-      band.setAttribute("height", String(height));
-      band.style.display = "none";
-      svg.appendChild(band);
-      for (let index = 1; index < points.length; index += 1) {
-        const previous = points[index - 1];
-        const point = points[index];
-        if (point.at <= previous.at) continue;
-        const left = x(previous.at);
-        const right = x(point.at);
-        const hit = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-        hit.classList.add("ocgo-forecast-hover-target");
-        hit.setAttribute("x", String(left));
-        hit.setAttribute("y", String(margin.top));
-        hit.setAttribute("width", String(Math.max(1, right - left)));
-        hit.setAttribute("height", String(height));
-        hit.setAttribute("tabindex", "0");
-        hit.setAttribute("role", "img");
-        hit.setAttribute("aria-label", `${model.displayName} · ${windowLabel(this.language, window2.key)} · ${formatDateTime(point.at)}`);
-        const show = (clientX, clientY) => {
-          if (!this.tooltip) return;
-          band.setAttribute("x", String(left));
-          band.setAttribute("width", String(Math.max(1, right - left)));
-          band.style.display = "";
-          const rows = [];
-          if (point.actualUsd !== null) {
-            rows.push([t(this.language, "forecast.chartHistory"), this.chartValue(point.actualUsd, window2)]);
-            rows.push([t(this.language, "forecast.absoluteLabel"), formatUsd(point.actualUsd)]);
-          }
-          if (point.p50Usd !== null) {
-            rows.push([t(this.language, "forecast.chartP50"), this.chartValue(point.p50Usd, window2)]);
-            if (point.p10Usd !== null) rows.push([t(this.language, "forecast.chartP10"), this.chartValue(point.p10Usd, window2)]);
-            if (point.p90Usd !== null) rows.push([t(this.language, "forecast.chartP90"), this.chartValue(point.p90Usd, window2)]);
-            rows.push([t(this.language, "forecast.absoluteLabel"), formatUsd(point.p50Usd)]);
-          }
-          const footer = this.chartExplanation(model, window2, point);
-          showDataTooltip(
-            this.tooltip,
-            `${model.displayName} · ${windowLabel(this.language, window2.key)} · ${formatDateTime(point.at)}`,
-            rows,
-            this.panel,
-            clientX,
-            clientY,
-            footer
-          );
-        };
-        const showAtTarget = () => {
-          const rect = hit.getBoundingClientRect();
-          show(rect.right, rect.bottom);
-        };
-        hit.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
-        hit.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
-        hit.addEventListener("pointerleave", () => {
-          band.style.display = "none";
-          hideChartTooltip(this.tooltip);
-        });
-        hit.addEventListener("focus", showAtTarget);
-        hit.addEventListener("blur", () => {
-          band.style.display = "none";
-          hideChartTooltip(this.tooltip);
-        });
-        svg.appendChild(hit);
-      }
-    }
-    renderTable(result, selected) {
-      const section = node("section", "ocgo-section ocgo-forecast-table-section");
-      const head = node("div", "ocgo-section-head");
-      head.appendChild(node("span", "", t(this.language, "forecast.tableTitle")));
-      section.appendChild(head);
-      const wrap = node("div", "ocgo-table-wrap");
-      const table = node("table", "ocgo-table ocgo-forecast-table");
-      const thead = node("thead");
-      const headerRow = node("tr");
-      const columns = [
-        ["forecast.table.model", "left"],
-        ["forecast.table.monthlyLimit", ""],
-        ["forecast.table.fiveHour", ""],
-        ["forecast.table.week", ""],
-        ["forecast.table.month", ""]
-      ];
-      for (const [key, align] of columns) headerRow.appendChild(node("th", align, t(this.language, key)));
-      thead.appendChild(headerRow);
-      const body = node("tbody");
-      for (const model of result.models) {
-        const row = node("tr", `ocgo-forecast-row${model.model === selected.model ? " ocgo-active" : ""}`);
-        row.dataset.model = model.model;
-        row.tabIndex = 0;
-        row.setAttribute("role", "button");
-        row.title = t(this.language, "forecast.selectedModel");
-        const choose = () => this.onSelectModel?.(model.model);
-        row.addEventListener("click", choose);
-        row.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            choose();
-          }
-        });
-        const nameCell = node("td", "left");
-        nameCell.append(node("div", "ocgo-forecast-model", model.displayName), node("div", "ocgo-note", model.model));
-        if (model.unpricedRequests > 0) nameCell.appendChild(node("div", "ocgo-warning", t(this.language, "forecast.unpriced", { n: model.unpricedRequests })));
-        row.appendChild(nameCell);
-        row.appendChild(node("td", "", !model.limitKnown ? t(this.language, "forecast.unknown") : model.monthlyLimitUsd === null ? t(this.language, "forecast.unlimited") : formatUsd(model.monthlyLimitUsd)));
-        row.appendChild(this.windowTableCell(model, "fiveHour", true));
-        row.appendChild(this.windowTableCell(model, "week", true));
-        row.appendChild(this.windowTableCell(model, "month", true));
-        body.appendChild(row);
-      }
-      table.append(thead, body);
-      wrap.appendChild(table);
-      section.appendChild(wrap);
-      return section;
-    }
-    windowTableCell(model, key, used) {
-      const window2 = model.windows[key];
-      const cell = node("td");
-      if (!model.limitKnown) {
-        cell.textContent = t(this.language, "forecast.unknown");
-      } else if (model.monthlyLimitUsd === null) {
-        cell.textContent = key === "next24h" ? formatUsd(window2.p50Usd) : t(this.language, "forecast.unlimited");
-      } else {
-        cell.textContent = percentOrUnknown(used ? window2.usedRatio : window2.p50Ratio);
-      }
-      cell.title = `${quantileTitle(window2, this.language)} · ${absoluteWindow(window2)}`;
-      this.bindValueTooltip(cell, model, window2);
-      return cell;
-    }
-    bindValueTooltip(element, model, window2) {
-      element.classList.add("ocgo-forecast-percent");
-      element.tabIndex = 0;
-      const show = (clientX, clientY) => {
-        if (!this.tooltip) return;
-        const rows = [];
-        if (!model.limitKnown) {
-          rows.push([t(this.language, "forecast.absolute"), t(this.language, "forecast.noQuotaData")]);
-        } else if (model.monthlyLimitUsd === null) {
-          rows.push([t(this.language, "forecast.absolute"), t(this.language, "forecast.unlimited")]);
-          rows.push([t(this.language, "forecast.projected"), formatUsd(window2.p50Usd)]);
-        } else {
-          if (window2.key !== "next24h") rows.push([t(this.language, "forecast.usedLabel"), percentOrUnknown(window2.usedRatio)]);
-          rows.push([t(this.language, "forecast.projectedLabel"), percentOrUnknown(window2.p50Ratio)]);
-          rows.push([t(this.language, "forecast.p90Label"), percentOrUnknown(window2.p90Ratio)]);
-          rows.push([t(this.language, "forecast.absoluteLabel"), `${formatUsd(window2.p50Usd)} / ${formatUsd(window2.limitUsd)}`]);
-        }
-        if (window2.resetsAt !== void 0) {
-          rows.push([
-            t(this.language, window2.key === "next24h" ? "forecast.forecastEndLabel" : "forecast.resetLabel"),
-            formatDateTime(window2.resetsAt)
-          ]);
-        }
-        if (window2.hitAt !== void 0) rows.push([t(this.language, "forecast.hitLabel"), formatDateTime(window2.hitAt)]);
-        const footer = this.cardExplanation(model, window2);
-        showDataTooltip(
-          this.tooltip,
-          `${model.displayName} · ${windowLabel(this.language, window2.key)}`,
-          rows,
-          this.panel,
-          clientX,
-          clientY,
-          footer
-        );
-      };
-      const showAtElement = () => {
-        const rect = element.getBoundingClientRect();
-        show(rect.right, rect.bottom);
-      };
-      element.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
-      element.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
-      element.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
-      element.addEventListener("focus", showAtElement);
-      element.addEventListener("blur", () => hideChartTooltip(this.tooltip));
-    }
-    bindRiskiestTooltip(element, model) {
-      const show = (clientX, clientY) => {
-        if (!this.tooltip) return;
-        const rows = [];
-        if (model.riskWindow) {
-          rows.push([
-            t(this.language, "forecast.riskiestHelpWindow"),
-            t(this.language, "forecast.riskiestHelpWindowValue", {
-              window: windowLabel(this.language, model.riskWindow),
-              value: formatPercent(model.riskScore)
-            })
-          ]);
-        }
-        showDataTooltip(
-          this.tooltip,
-          t(this.language, "forecast.riskiestHelpHead"),
-          rows,
-          this.panel,
-          clientX,
-          clientY,
-          t(this.language, "forecast.riskiestHelpFooter")
-        );
-      };
-      const showAtElement = () => {
-        const rect = element.getBoundingClientRect();
-        show(rect.right, rect.bottom);
-      };
-      element.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
-      element.addEventListener("pointermove", (event) => show(event.clientX, event.clientY));
-      element.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
-      element.addEventListener("focus", showAtElement);
-      element.addEventListener("blur", () => hideChartTooltip(this.tooltip));
-    }
-    bindInfoTooltip(button2) {
-      const show = (clientX, clientY) => {
-        if (!this.tooltip) return;
-        showDataTooltip(
-          this.tooltip,
-          t(this.language, "forecast.infoHead"),
-          [
-            [t(this.language, "forecast.infoHistory"), t(this.language, "forecast.infoHistoryDesc")],
-            [t(this.language, "forecast.infoForecast"), t(this.language, "forecast.infoForecastDesc")],
-            [t(this.language, "forecast.infoBand"), t(this.language, "forecast.infoBandDesc")],
-            [t(this.language, "forecast.infoMarkers"), t(this.language, "forecast.infoMarkersDesc")],
-            [t(this.language, "forecast.infoMethod"), t(this.language, "forecast.infoMethodDesc")]
-          ],
-          this.panel,
-          clientX,
-          clientY,
-          t(this.language, "forecast.infoFooter")
-        );
-      };
-      const showAtButton = () => {
-        const rect = button2.getBoundingClientRect();
-        show(rect.right, rect.bottom);
-      };
-      button2.addEventListener("pointerenter", (event) => show(event.clientX, event.clientY));
-      button2.addEventListener("pointerleave", () => hideChartTooltip(this.tooltip));
-      button2.addEventListener("focus", showAtButton);
-      button2.addEventListener("blur", () => hideChartTooltip(this.tooltip));
-    }
-    cardExplanation(model, window2) {
-      if (!model.limitKnown) return t(this.language, "forecast.noQuotaData");
-      if (model.monthlyLimitUsd === null || window2.p50Ratio === null) return t(this.language, "forecast.unlimited");
-      const p50Ratio = window2.p50Ratio;
-      const monthUsed = model.windows.month.usedRatio ?? 0;
-      let arrivalRatio;
-      if (window2.key === "month") {
-        arrivalRatio = p50Ratio;
-      } else if (window2.key === "next24h") {
-        arrivalRatio = monthUsed + p50Ratio;
-      } else {
-        const futureUsd = Math.max(0, window2.p50Usd - window2.usedUsd);
-        arrivalRatio = monthUsed + futureUsd / model.monthlyLimitUsd;
-      }
-      return t(this.language, "forecast.explainMonthlyArrival", { value: formatPercent(arrivalRatio) });
-    }
-    chartExplanation(model, window2, point) {
-      if (!model.limitKnown || window2.limitUsd === null || window2.limitUsd <= 0) {
-        return !model.limitKnown ? t(this.language, "forecast.noQuotaData") : t(this.language, "forecast.unlimited");
-      }
-      if (point.actualUsd !== null) {
-        return t(this.language, "forecast.explainHistory", { value: formatPercent(point.actualUsd / window2.limitUsd) });
-      }
-      if (point.p50Usd === null) return t(this.language, "forecast.noQuotaData");
-      const ratio = point.p50Usd / window2.limitUsd;
-      if (window2.key === "next24h") {
-        const monthUsed = model.windows.month.usedRatio ?? 0;
-        return t(this.language, "forecast.explain24hToPoint", {
-          value: formatPercent(ratio),
-          arrival: formatPercent(monthUsed + ratio)
-        });
-      }
-      return t(this.language, "forecast.explainPoint", { value: formatPercent(ratio) });
-    }
-    renderFooter(result, model) {
-      const footer = node("div", "ocgo-forecast-footer");
-      footer.append(
-        node("span", "ocgo-note", t(this.language, "forecast.rangeIgnored")),
-        node("span", "ocgo-note", t(this.language, "forecast.asOf", { time: formatDateTime(result.generatedAt) }))
-      );
-      if (model.confidenceReasons.length) {
-        const reasons = model.confidenceReasons.map((key) => t(this.language, key)).join(" · ");
-        footer.appendChild(node("span", "ocgo-warning", `${t(this.language, "forecast.confidence", { value: confidenceLabel(this.language, model) })} — ${reasons}`));
-      }
-      return footer;
-    }
-  };
-
   // src/ui/styles.ts
   var panelCss = `
 :host {
@@ -3802,71 +2478,20 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
   .ocgo-status-dot.busy { animation: none; }
   .ocgo-fab { transition: none; }
 }
-.ocgo-tab-badge { margin-left: 4px; padding: 0 4px; border: 1px solid rgba(118,152,253,.38); border-radius: 999px; color: var(--accent); font-size: 8px; line-height: 1.5; vertical-align: 1px; }
-.ocgo-experimental { display: flex; flex-direction: column; gap: 6px; }
-.ocgo-experimental-row { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: 11px; }
-.ocgo-experimental-row input { accent-color: var(--accent); }
-.ocgo-forecast-view { display: flex; flex-direction: column; gap: 10px; }
-.ocgo-forecast-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.ocgo-forecast-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.ocgo-forecast-source, .ocgo-forecast-confidence { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.025); font-size: 9px; }
-.ocgo-forecast-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.ocgo-forecast-card { min-height: 116px; }
-.ocgo-forecast-card .ocgo-card-value { font-size: 18px; }
-.ocgo-forecast-card .ocgo-card-label { min-height: 27px; text-transform: none; letter-spacing: 0; line-height: 1.35; }
-.ocgo-card-detail { margin-top: 5px; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
-.ocgo-danger-text { color: var(--danger) !important; }
-.ocgo-forecast-chart-section .ocgo-section-head { align-items: center; }
-.ocgo-forecast-window-controls { display: flex; gap: 4px; flex-wrap: wrap; }
-.ocgo-forecast-window-btn.ocgo-active { border-color: rgba(118,152,253,.72); color: var(--accent); background: rgba(118,152,253,.10); }
-.ocgo-forecast-chart { width: 100%; height: 250px; display: block; }
-.ocgo-forecast-gridline { stroke: rgba(255,255,255,.07); stroke-width: 1; }
-.ocgo-forecast-axis-label { fill: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.ocgo-forecast-chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 7px 2px 0; color: var(--faint); font-size: 9.5px; line-height: 1.4; }
-.ocgo-forecast-legend-item { display: inline-flex; align-items: center; gap: 5px; }
-.ocgo-forecast-legend-swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--accent); }
-.ocgo-forecast-legend-p50 { border-top-style: dashed; border-top-color: var(--violet); }
-.ocgo-forecast-legend-band { width: 18px; height: 8px; border: 0; border-radius: 2px; background: rgba(158,153,247,.18); }
-.ocgo-forecast-legend-now { border-top-style: dashed; border-top-color: rgba(250,250,250,.65); }
-.ocgo-forecast-legend-reset { border-top-style: dashed; border-top-color: rgba(242,207,118,.75); }
-.ocgo-forecast-actual { fill: none; stroke: var(--accent); stroke-width: 2; }
-.ocgo-forecast-p50 { fill: none; stroke: var(--violet); stroke-width: 2; stroke-dasharray: 5 4; }
-.ocgo-forecast-band { fill: rgba(158,153,247,.13); stroke: none; }
-.ocgo-forecast-now { stroke: rgba(250,250,250,.45); stroke-width: 1; stroke-dasharray: 3 4; }
-.ocgo-forecast-boundary { stroke: rgba(242,207,118,.28); stroke-width: 1; stroke-dasharray: 2 5; }
-.ocgo-forecast-table-wrap { max-height: 300px; }
-.ocgo-forecast-row { cursor: pointer; }
-.ocgo-forecast-row.ocgo-active td { background: rgba(118,152,253,.075); }
-.ocgo-forecast-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.ocgo-forecast-model { color: var(--fg); font-weight: 600; }
-.ocgo-forecast-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; }
-.ocgo-forecast-state { border: 1px dashed var(--line); border-radius: 10px; padding: 26px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--muted); }
-.ocgo-forecast-footer { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-.ocgo-forecast-footer .ocgo-warning { flex-basis: 100%; }
-@media (max-width: 980px) { .ocgo-forecast-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .ocgo-forecast-cards { grid-template-columns: 1fr; } .ocgo-forecast-chart { height: 210px; } }
 
-.ocgo-forecast-chart-title { display: flex; align-items: center; gap: 6px; }
-.ocgo-info-btn { width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: rgba(255,255,255,.04); color: var(--muted); font: italic 700 11px/1 Georgia, serif; cursor: help; }
-.ocgo-info-btn:hover, .ocgo-info-btn:focus-visible { color: var(--accent); border-color: rgba(118,152,253,.6); outline: none; }
-.ocgo-forecast-percent, .ocgo-forecast-help { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
-.ocgo-forecast-percent:focus-visible, .ocgo-forecast-help:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
-.ocgo-forecast-hover-target { fill: transparent; pointer-events: all; }
-.ocgo-forecast-hover-band { fill: rgba(255,255,255,.055); pointer-events: none; }
-.ocgo-forecast-hover-target:focus { outline: none; }
 
 `;
 
   // src/ui/panel.ts
-  function node2(tag, className = "", text2 = "") {
+  function node(tag, className = "", text2 = "") {
     const element = document.createElement(tag);
     if (className) element.className = className;
     if (text2) element.textContent = text2;
     return element;
   }
   function button(text2, className = "ocgo-btn") {
-    const element = node2("button", className, text2);
+    const element = node("button", className, text2);
     element.type = "button";
     return element;
   }
@@ -3895,6 +2520,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     return value.length <= 22 ? value : `${value.slice(0, 10)}…${value.slice(-6)}`;
   }
   var RANGE_PRESETS = ["1h", "5h", "24h", "7d", "30d", "all", "custom"];
+  var TAB_KEYS = ["overview", "charts", "requests", "data"];
   var MIN_PANEL_WIDTH = 680;
   var MIN_PANEL_HEIGHT = 480;
   var MIN_CHART_SCALE = 0.5;
@@ -3924,10 +2550,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     cards;
     overviewModels;
     overviewLegacyNote;
-    overviewForecastSection;
-    overviewForecast;
-    overviewForecastPanel;
-    overviewForecastModel;
     charts = [];
     chartModels;
     chartGrid;
@@ -3942,10 +2564,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     requestPager;
     dataInfo;
     dataActions;
-    experimentalCheckbox;
-    forecastTab;
-    forecastHost;
-    forecastPanel;
     pricingPanel;
     storageNote;
     logList;
@@ -3987,26 +2605,12 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     pricingLoading = false;
     pricingError = "";
     pricingPromise;
-    experimentalForecast = false;
-    forecastRecords;
-    forecastResult;
-    forecastStatus;
-    forecastStatusFetchedAt = 0;
-    forecastStatusError = "";
-    forecastLoading = false;
-    forecastRefreshing = false;
-    forecastError = "";
-    forecastLoadSeq = 0;
-    forecastStale = true;
-    forecastController;
-    forecastViewReady = false;
     constructor(logger2) {
       this.logger = logger2;
       this.language = loadJSON(LANGUAGE_STORAGE_KEY, detectLanguage());
       this.rangePreset = loadJSON(RANGE_STORAGE_KEY, "5h");
-      this.activeTab = loadJSON(TAB_STORAGE_KEY, "overview");
-      this.experimentalForecast = loadJSON(EXPERIMENTAL_FORECAST_KEY, false);
-      if (!this.experimentalForecast && this.activeTab === "forecast") this.activeTab = "data";
+      const storedTab = loadJSON(TAB_STORAGE_KEY, "overview");
+      this.activeTab = TAB_KEYS.includes(storedTab) ? storedTab : "overview";
       this.filters = loadJSON(FILTERS_STORAGE_KEY, { model: "", provider: "", userKey: "" });
       this.persisted = loadJSON(PANEL_STATE_KEY, {});
       if (typeof this.persisted.chartScale === "number" && Number.isFinite(this.persisted.chartScale)) {
@@ -4017,10 +2621,10 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     mount() {
       if (this.mounted || document.getElementById("ocgo-lens-host")) return;
       this.mounted = true;
-      this.host = node2("div");
+      this.host = node("div");
       this.host.id = "ocgo-lens-host";
       this.shadow = this.host.attachShadow({ mode: "open" });
-      const style = node2("style");
+      const style = node("style");
       style.textContent = panelCss;
       this.shadow.appendChild(style);
       this.buildShell(this.shadow);
@@ -4048,12 +2652,12 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       return element;
     }
     textFor(key) {
-      const element = node2("span");
+      const element = node("span");
       this.rememberI18n(key, element);
       return element;
     }
     buildShell(root) {
-      const wrapper = node2("div");
+      const wrapper = node("div");
       wrapper.id = "ocgo-lens";
       this.fab = button("", "ocgo-fab");
       this.fab.setAttribute("aria-label", t(this.language, "app.open"));
@@ -4068,23 +2672,23 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.setOpen(!this.open);
       });
       this.bindFabDrag();
-      const panel2 = node2("section", "ocgo-panel ocgo-hidden");
+      const panel2 = node("section", "ocgo-panel ocgo-hidden");
       panel2.id = "ocgo-lens-panel";
       this.panel = panel2;
       panel2.setAttribute("role", "dialog");
       panel2.setAttribute("aria-modal", "false");
       panel2.setAttribute("aria-labelledby", "ocgo-lens-title");
-      const header = node2("header", "ocgo-header");
-      const brand = node2("div", "ocgo-brand");
-      const title = this.rememberI18n("app.title", node2("div", "ocgo-title"));
+      const header = node("header", "ocgo-header");
+      const brand = node("div", "ocgo-brand");
+      const title = this.rememberI18n("app.title", node("div", "ocgo-title"));
       title.id = "ocgo-lens-title";
-      brand.append(title, this.rememberI18n("app.subtitle", node2("div", "ocgo-subtitle")));
-      this.workspaceLabel = node2("span", "ocgo-workspace");
-      const langSelect = node2("select");
+      brand.append(title, this.rememberI18n("app.subtitle", node("div", "ocgo-subtitle")));
+      this.workspaceLabel = node("span", "ocgo-workspace");
+      const langSelect = node("select");
       this.langSelect = langSelect;
       langSelect.setAttribute("aria-label", t(this.language, "app.language"));
       for (const [value, label] of [["zh", "中文"], ["en", "English"]]) {
-        const option = node2("option", "", label);
+        const option = node("option", "", label);
         option.value = value;
         langSelect.appendChild(option);
       }
@@ -4095,43 +2699,43 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.closeButton = close;
       header.append(brand, this.workspaceLabel, langSelect, close);
       this.bindDrag(header);
-      const toolbar = node2("div", "ocgo-toolbar");
-      const rangeWrap = node2("label");
+      const toolbar = node("div", "ocgo-toolbar");
+      const rangeWrap = node("label");
       this.rangeControl = rangeWrap;
       rangeWrap.append(this.textFor("range.label"));
-      const rangeSelect = node2("select");
+      const rangeSelect = node("select");
       this.rangeSelect = rangeSelect;
       for (const preset of RANGE_PRESETS) {
-        const option = node2("option");
+        const option = node("option");
         option.value = preset;
         this.rememberI18n(`range.${preset}`, option);
         rangeSelect.appendChild(option);
       }
       rangeWrap.append(rangeSelect);
-      const custom = node2("div", "ocgo-custom-range");
+      const custom = node("div", "ocgo-custom-range");
       this.customRange = custom;
-      const fromInput = node2("input");
+      const fromInput = node("input");
       fromInput.type = "datetime-local";
-      const toInput = node2("input");
+      const toInput = node("input");
       toInput.type = "datetime-local";
       fromInput.value = this.persisted.customFrom ?? "";
       toInput.value = this.persisted.customTo ?? "";
       this.customFrom = fromInput;
       this.customTo = toInput;
       custom.append(this.textFor("range.from"), fromInput, this.textFor("range.to"), toInput);
-      const modelLabel = node2("label");
+      const modelLabel = node("label");
       modelLabel.append(this.textFor("filter.model"));
-      const modelSelect = node2("select");
+      const modelSelect = node("select");
       this.modelSelect = modelSelect;
       modelLabel.append(modelSelect);
-      const providerLabel = node2("label");
+      const providerLabel = node("label");
       providerLabel.append(this.textFor("filter.provider"));
-      const providerSelect = node2("select");
+      const providerSelect = node("select");
       this.providerSelect = providerSelect;
       providerLabel.append(providerSelect);
-      const userLabel = node2("label");
+      const userLabel = node("label");
       userLabel.append(this.textFor("filter.user"));
-      const userSelect = node2("select");
+      const userSelect = node("select");
       this.userSelect = userSelect;
       userLabel.append(userSelect);
       const clearFilters = button("", "ocgo-btn");
@@ -4187,51 +2791,42 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.persistPreferences();
         this.render();
       });
-      const tabs = node2("nav", "ocgo-tabs");
-      const tabKeys = ["overview", "charts", "forecast", "requests", "data"];
-      for (const key of tabKeys) {
+      const tabs = node("nav", "ocgo-tabs");
+      for (const key of TAB_KEYS) {
         const tab = button("", "ocgo-tab");
         tab.appendChild(this.textFor(`tabs.${key}`));
-        if (key === "forecast") {
-          tab.appendChild(node2("span", "ocgo-tab-badge", t(this.language, "badge.beta")));
-          this.forecastTab = tab;
-        }
         tab.dataset.tab = key;
         tab.addEventListener("click", () => this.setTab(key));
         this.tabButtons.set(key, tab);
         tabs.appendChild(tab);
       }
-      const status = node2("div", "ocgo-statusbar");
-      this.statusDot = node2("span", "ocgo-status-dot");
-      this.statusText = node2("span");
+      const status = node("div", "ocgo-statusbar");
+      this.statusDot = node("span", "ocgo-status-dot");
+      this.statusText = node("span");
       status.append(this.statusDot, this.statusText);
-      this.errorBox = node2("div", "ocgo-error ocgo-hidden");
-      const body = node2("div", "ocgo-body");
+      this.errorBox = node("div", "ocgo-error ocgo-hidden");
+      const body = node("div", "ocgo-body");
       const overview = this.buildOverviewView();
       const charts = this.buildChartsView();
       const requests = this.buildRequestsView();
-      const forecast = this.buildForecastView();
       const data = this.buildDataView();
       this.views.set("overview", overview);
       this.views.set("charts", charts);
       this.views.set("requests", requests);
-      this.views.set("forecast", forecast);
       this.views.set("data", data);
-      body.append(overview, charts, forecast, requests, data);
+      body.append(overview, charts, requests, data);
       const directions = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
       const handles = directions.map((direction) => {
-        const handle = node2("div", `ocgo-resize-handle ocgo-resize-${direction}`);
+        const handle = node("div", `ocgo-resize-handle ocgo-resize-${direction}`);
         handle.dataset.resize = direction;
         handle.setAttribute("aria-hidden", "true");
         this.bindResize(handle, direction);
         return handle;
       });
       panel2.append(header, toolbar, tabs, status, this.errorBox, body, ...handles);
-      this.chartTooltip = node2("div", "ocgo-chart-tooltip ocgo-hidden");
+      this.chartTooltip = node("div", "ocgo-chart-tooltip ocgo-hidden");
       this.chartTooltip.setAttribute("role", "tooltip");
-      this.forecastPanel?.setTooltip(this.chartTooltip);
-      this.overviewForecastPanel?.setTooltip(this.chartTooltip);
-      this.toast = node2("div", "ocgo-toast ocgo-hidden");
+      this.toast = node("div", "ocgo-toast ocgo-hidden");
       this.toast.setAttribute("role", "status");
       this.toast.setAttribute("aria-live", "polite");
       panel2.appendChild(this.toast);
@@ -4251,40 +2846,26 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       document.addEventListener("visibilitychange", () => this.handleVisibility());
     }
     buildOverviewView() {
-      const view = node2("section", "ocgo-view");
+      const view = node("section", "ocgo-view");
       view.dataset.view = "overview";
-      this.cards = node2("div", "ocgo-cards");
-      const forecastSection = node2("section", "ocgo-section ocgo-overview-forecast");
-      forecastSection.hidden = true;
-      forecastSection.dataset.overviewForecast = "";
-      const forecastHead = node2("div", "ocgo-section-head");
-      const forecastTitleGroup = node2("div", "ocgo-forecast-chart-title");
-      const forecastTitle = this.textFor("forecast.overviewTitle");
-      forecastTitle.className = "ocgo-section-title";
-      forecastTitleGroup.append(forecastTitle, this.rememberI18n("badge.beta", node2("span", "ocgo-tab-badge")));
-      this.overviewForecastModel = node2("span", "ocgo-note");
-      forecastHead.append(forecastTitleGroup, this.overviewForecastModel);
-      this.overviewForecast = node2("div", "ocgo-forecast-view ocgo-overview-forecast-cards");
-      this.overviewForecastPanel = new ForecastPanel(this.overviewForecast, this.panel ?? this.overviewForecast);
-      forecastSection.append(forecastHead, this.overviewForecast);
-      this.overviewForecastSection = forecastSection;
-      const section = node2("section", "ocgo-section");
-      const head = node2("div", "ocgo-section-head");
+      this.cards = node("div", "ocgo-cards");
+      const section = node("section", "ocgo-section");
+      const head = node("div", "ocgo-section-head");
       const legacyNote = this.textFor("legacy.note");
       this.overviewLegacyNote = legacyNote;
       head.append(this.textFor("chart.models"), legacyNote);
-      this.overviewModels = node2("div", "ocgo-table-wrap");
+      this.overviewModels = node("div", "ocgo-table-wrap");
       section.append(head, this.overviewModels);
-      view.append(this.cards, forecastSection, section);
+      view.append(this.cards, section);
       return view;
     }
     buildChartsView() {
-      const view = node2("section", "ocgo-view");
+      const view = node("section", "ocgo-view");
       view.dataset.view = "charts";
-      const controls = node2("div", "ocgo-chart-controls");
+      const controls = node("div", "ocgo-chart-controls");
       const zoomLabel = this.textFor("chart.zoom");
       zoomLabel.className = "ocgo-chart-zoom-label";
-      const zoomGroup = node2("div", "ocgo-chart-zoom");
+      const zoomGroup = node("div", "ocgo-chart-zoom");
       const zoomOut = button("−", "ocgo-zoom-btn");
       this.chartZoomOut = zoomOut;
       zoomOut.setAttribute("aria-label", t(this.language, "chart.zoomOut"));
@@ -4299,97 +2880,71 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       zoomIn.addEventListener("click", () => this.setChartScale(this.chartScale + CHART_SCALE_STEP));
       zoomGroup.append(zoomOut, zoomValue, zoomIn);
       controls.append(zoomLabel, zoomGroup);
-      const grid = node2("div", "ocgo-chart-grid");
+      const grid = node("div", "ocgo-chart-grid");
       this.chartGrid = grid;
       const keys = ["chart.tokens", "chart.cache", "chart.ttft", "chart.tps"];
       for (const key of keys) {
-        const section = node2("section", "ocgo-section ocgo-chart-box");
-        const head2 = node2("div", "ocgo-section-head");
-        const titleGroup = node2("div", "ocgo-chart-title-group");
+        const section = node("section", "ocgo-section ocgo-chart-box");
+        const head2 = node("div", "ocgo-section-head");
+        const titleGroup = node("div", "ocgo-chart-title-group");
         const title = this.textFor(key);
         title.className = "ocgo-section-title";
-        const average = node2("span", "ocgo-section-average");
+        const average = node("span", "ocgo-section-average");
         this.chartAverages.set(key, average);
         titleGroup.append(title, average);
         head2.append(titleGroup);
-        const host = node2("div", "ocgo-chart-host");
+        const host = node("div", "ocgo-chart-host");
         this.charts.push(host);
         section.append(head2, host);
         grid.appendChild(section);
       }
-      const modelSection = node2("section", "ocgo-section");
-      const head = node2("div", "ocgo-section-head");
+      const modelSection = node("section", "ocgo-section");
+      const head = node("div", "ocgo-section-head");
       head.append(this.textFor("chart.models"));
-      this.chartModels = node2("div", "ocgo-table-wrap");
+      this.chartModels = node("div", "ocgo-table-wrap");
       modelSection.append(head, this.chartModels);
       view.append(controls, grid, modelSection);
       return view;
     }
     buildRequestsView() {
-      const view = node2("section", "ocgo-view");
+      const view = node("section", "ocgo-view");
       view.dataset.view = "requests";
-      const section = node2("section", "ocgo-section");
-      this.requestsTable = node2("div", "ocgo-table-wrap");
-      this.requestPager = node2("div", "ocgo-pager");
+      const section = node("section", "ocgo-section");
+      this.requestsTable = node("div", "ocgo-table-wrap");
+      this.requestPager = node("div", "ocgo-pager");
       section.append(this.requestsTable, this.requestPager);
       view.append(section);
       return view;
     }
-    buildForecastView() {
-      const view = node2("section", "ocgo-view");
-      view.dataset.view = "forecast";
-      const host = node2("div", "ocgo-forecast-view");
-      this.forecastHost = host;
-      this.forecastPanel = new ForecastPanel(host, this.panel ?? host);
-      view.appendChild(host);
-      return view;
-    }
     buildDataView() {
-      const view = node2("section", "ocgo-view");
+      const view = node("section", "ocgo-view");
       view.dataset.view = "data";
-      const grid = node2("div", "ocgo-data-grid");
-      const infoSection = node2("section", "ocgo-section");
-      const infoHead = node2("div", "ocgo-section-head");
+      const grid = node("div", "ocgo-data-grid");
+      const infoSection = node("section", "ocgo-section");
+      const infoHead = node("div", "ocgo-section-head");
       infoHead.append(this.textFor("tabs.data"));
-      this.dataInfo = node2("div");
+      this.dataInfo = node("div");
       infoSection.append(infoHead, this.dataInfo);
-      const actionSection = node2("section", "ocgo-section");
-      const actionHead = node2("div", "ocgo-section-head");
+      const actionSection = node("section", "ocgo-section");
+      const actionHead = node("div", "ocgo-section-head");
       actionHead.append(this.textFor("data.actions"));
-      this.dataActions = node2("div", "ocgo-actions");
+      this.dataActions = node("div", "ocgo-actions");
       actionSection.append(actionHead, this.dataActions);
       grid.append(infoSection, actionSection);
-      const experimentalSection = node2("section", "ocgo-section");
-      const experimentalHead = node2("div", "ocgo-section-head");
-      experimentalHead.append(this.textFor("data.experimentalTitle"));
-      const experimental = node2("div", "ocgo-experimental");
-      const experimentalRow = node2("label", "ocgo-experimental-row");
-      const experimentalCheckbox = node2("input");
-      experimentalCheckbox.type = "checkbox";
-      experimentalCheckbox.checked = this.experimentalForecast;
-      this.experimentalCheckbox = experimentalCheckbox;
-      experimentalCheckbox.addEventListener("change", () => this.setExperimentalForecast(experimentalCheckbox.checked));
-      experimentalRow.append(experimentalCheckbox, this.textFor("data.experimentalForecast"));
-      experimental.append(
-        experimentalRow,
-        this.rememberI18n("data.experimentalForecastHint", node2("div", "ocgo-note")),
-        this.rememberI18n("data.experimentalForecastNote", node2("div", "ocgo-note"))
-      );
-      experimentalSection.append(experimentalHead, experimental);
-      const pricingSection = node2("section", "ocgo-section ocgo-pricing-section");
-      const pricingHead = node2("div", "ocgo-section-head");
+      const pricingSection = node("section", "ocgo-section ocgo-pricing-section");
+      const pricingHead = node("div", "ocgo-section-head");
       pricingHead.append(
         this.textFor("data.pricingTitle"),
-        this.rememberI18n("data.pricingHint", node2("span", "ocgo-section-note"))
+        this.rememberI18n("data.pricingHint", node("span", "ocgo-section-note"))
       );
-      this.pricingPanel = node2("div", "ocgo-pricing-panel");
+      this.pricingPanel = node("div", "ocgo-pricing-panel");
       pricingSection.append(pricingHead, this.pricingPanel);
-      const diagnostics = node2("section", "ocgo-section");
-      const logHead = node2("div", "ocgo-section-head");
+      const diagnostics = node("section", "ocgo-section");
+      const logHead = node("div", "ocgo-section-head");
       logHead.append(this.textFor("data.diagnostics"));
-      this.logList = node2("div", "ocgo-log-list");
+      this.logList = node("div", "ocgo-log-list");
       diagnostics.append(logHead, this.logList);
-      view.append(grid, experimentalSection, pricingSection, diagnostics);
+      view.append(grid, pricingSection, diagnostics);
       return view;
     }
     bindDrag(header) {
@@ -4624,7 +3179,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (open) {
         this.hasOpened = true;
         this.render();
-        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
         window.setTimeout(() => this.autoSyncIfStale(), 150);
       }
     }
@@ -4670,202 +3224,21 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (result.error) this.logger.warn("log.pricingRefreshFailed", { error: result.error });
       return this.pricing;
     }
-    setExperimentalForecast(enabled) {
-      this.experimentalForecast = enabled;
-      saveJSON(EXPERIMENTAL_FORECAST_KEY, enabled);
-      if (!enabled) {
-        this.resetForecast();
-        if (this.activeTab === "forecast") this.activeTab = "data";
-        saveJSON(TAB_STORAGE_KEY, this.activeTab);
-      } else {
-        this.forecastStale = true;
-      }
-      this.renderChrome();
-      this.render();
-      if (enabled && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
-    }
-    resetForecast() {
-      this.forecastController?.abort();
-      this.forecastController = void 0;
-      this.forecastLoadSeq += 1;
-      this.forecastRecords = void 0;
-      this.forecastResult = void 0;
-      this.forecastStatus = void 0;
-      this.forecastStatusFetchedAt = 0;
-      this.forecastStatusError = "";
-      this.forecastLoading = false;
-      this.forecastRefreshing = false;
-      this.forecastError = "";
-      this.forecastStale = true;
-      this.setForecastBusy(false);
-    }
-    setForecastBusy(busy) {
-      this.forecastPanel?.setBusy(busy, this.language);
-      this.overviewForecastPanel?.setBusy(busy, this.language);
-    }
-    async loadForecastStatus(force) {
-      if (!force && this.forecastStatus && Date.now() - this.forecastStatusFetchedAt < 6e4) {
-        return this.forecastStatus;
-      }
-      const workspaceID = this.workspaceID;
-      if (!workspaceID) return void 0;
-      this.forecastController?.abort();
-      const controller = new AbortController();
-      this.forecastController = controller;
-      try {
-        const status = await getGoQuotaStatus(workspaceID, controller.signal);
-        if (this.workspaceID !== workspaceID || controller.signal.aborted) return void 0;
-        this.forecastStatus = status;
-        this.forecastStatusFetchedAt = Date.now();
-        this.forecastStatusError = "";
-        return status;
-      } catch (error) {
-        if (controller.signal.aborted || error instanceof DOMException && error.name === "AbortError") return void 0;
-        this.forecastStatus = void 0;
-        this.forecastStatusFetchedAt = Date.now();
-        this.forecastStatusError = error instanceof Error ? error.message : String(error);
-        this.logger.warn("log.goStatusFailed", { error: this.forecastStatusError });
-        return void 0;
-      } finally {
-        if (this.forecastController === controller) this.forecastController = void 0;
-      }
-    }
-    async loadForecast(force) {
-      if (!this.open || !this.experimentalForecast || !this.workspaceID) return;
-      if (this.forecastLoading || this.forecastRefreshing) return;
-      if (!force && !this.forecastStale && this.forecastResult) {
-        this.renderForecast();
-        return;
-      }
-      const workspaceID = this.workspaceID;
-      const loadSeq = ++this.forecastLoadSeq;
-      const keepPrevious = Boolean(this.forecastResult && this.forecastRecords?.length);
-      this.forecastLoading = !keepPrevious;
-      this.forecastRefreshing = keepPrevious;
-      this.forecastError = "";
-      if (keepPrevious) this.setForecastBusy(true);
-      else this.renderForecast();
-      try {
-        const [pricing, records, status] = await Promise.all([
-          this.ensurePricing(),
-          getAllRecords(workspaceID),
-          this.loadForecastStatus(force)
-        ]);
-        if (loadSeq !== this.forecastLoadSeq || this.workspaceID !== workspaceID) return;
-        if (!pricing) {
-          throw new Error(this.pricingError || t(this.language, "data.pricingEmpty"));
-        }
-        this.forecastRecords = records;
-        this.forecastResult = buildQuotaForecast({
-          records,
-          pricing,
-          filters: this.filters,
-          status,
-          syncState: this.syncState,
-          statusError: this.forecastStatusError,
-          now: Date.now()
-        });
-        this.forecastStale = false;
-        this.logger.info("log.forecastUpdated", { n: this.forecastResult.models.length });
-      } catch (error) {
-        if (loadSeq === this.forecastLoadSeq) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.warn("log.forecastFailed", { error: message });
-          if (keepPrevious) {
-            this.showToast("forecast.refreshFailed", { error: message });
-          } else {
-            this.forecastError = message;
-          }
-        }
-      } finally {
-        if (loadSeq === this.forecastLoadSeq) {
-          this.forecastLoading = false;
-          this.forecastRefreshing = false;
-          this.setForecastBusy(false);
-          this.renderForecast();
-        }
-      }
-    }
-    currentForecastResult() {
-      if (!this.forecastRecords || !this.pricing) return void 0;
-      return buildQuotaForecast({
-        records: this.forecastRecords,
-        pricing: this.pricing,
-        filters: this.filters,
-        status: this.forecastStatus,
-        syncState: this.syncState,
-        statusError: this.forecastStatusError,
-        now: Date.now()
-      });
-    }
-    renderForecast() {
-      if (this.activeTab === "overview") this.renderOverviewForecast();
-      if (!this.open || !this.experimentalForecast || !this.forecastPanel) return;
-      if (!this.workspaceID) {
-        this.forecastPanel.renderEmpty(this.language, t(this.language, "error.workspace"), t(this.language, "forecast.emptyHint"));
-        return;
-      }
-      if (this.forecastLoading) {
-        this.forecastPanel.renderLoading(this.language);
-        return;
-      }
-      if (this.forecastError) {
-        this.forecastPanel.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
-        return;
-      }
-      const result = this.currentForecastResult();
-      if (!result) {
-        this.forecastPanel.renderEmpty(this.language);
-        return;
-      }
-      this.forecastResult = result;
-      if (!this.forecastRecords?.length) {
-        this.forecastPanel.renderEmpty(this.language);
-        return;
-      }
-      if (!this.forecastResult.models.length) {
-        this.forecastPanel.renderEmpty(this.language, t(this.language, "forecast.noConsumedModels"), t(this.language, "forecast.emptyHint"));
-        return;
-      }
-      this.forecastPanel.render(
-        this.forecastResult,
-        this.filters.model,
-        this.language,
-        (model) => {
-          this.filters.model = model;
-          this.requestPage = 1;
-          this.persistPreferences();
-          this.renderFilters();
-          this.render();
-        },
-        () => void this.loadForecast(true)
-      );
-    }
     setTab(tab) {
-      if (tab === "forecast" && !this.experimentalForecast) tab = "data";
       this.activeTab = tab;
       hideChartTooltip(this.chartTooltip);
       saveJSON(TAB_STORAGE_KEY, tab);
       for (const [key, tabButton] of this.tabButtons) {
         tabButton.classList.toggle("ocgo-active", key === tab);
-        if (key === "forecast") tabButton.hidden = !this.experimentalForecast;
       }
       for (const [key, view] of this.views) view.classList.toggle("ocgo-active", key === tab);
-      if (this.rangeControl) this.rangeControl.hidden = tab === "forecast";
-      this.customRange?.classList.toggle("ocgo-show", tab !== "forecast" && this.rangePreset === "custom");
+      this.customRange?.classList.toggle("ocgo-show", this.rangePreset === "custom");
       if (tab === "data") this.renderData();
       if (tab === "requests") this.renderRequests();
-      if ((tab === "forecast" || tab === "overview") && this.open) {
-        if (this.forecastStale || !this.forecastResult) void this.loadForecast(false);
-        else if (tab === "forecast") this.renderForecast();
-        else this.renderOverviewForecast();
-      }
     }
     setLanguage(language) {
       this.language = language;
       saveJSON(LANGUAGE_STORAGE_KEY, language);
-      const badge = this.forecastTab?.querySelector(".ocgo-tab-badge");
-      if (badge) badge.textContent = t(language, "badge.beta");
       hideChartTooltip(this.chartTooltip);
       this.renderChrome();
       this.render();
@@ -4931,9 +3304,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.syncButton.classList.toggle("ocgo-stop", this.busy);
         this.syncButton.disabled = !this.workspaceID;
       }
-      this.customRange?.classList.toggle("ocgo-show", this.rangePreset === "custom" && this.activeTab !== "forecast");
-      if (this.experimentalCheckbox) this.experimentalCheckbox.checked = this.experimentalForecast;
-      if (this.forecastTab) this.forecastTab.hidden = !this.experimentalForecast;
+      this.customRange?.classList.toggle("ocgo-show", this.rangePreset === "custom");
       const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
       if (this.workspaceLabel) {
         this.workspaceLabel.textContent = workspace?.name || this.workspaceID || t(this.language, "app.noWorkspace");
@@ -4951,14 +3322,14 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       });
       if (this.userSelect) {
         this.userSelect.replaceChildren();
-        const all = node2("option", "", t(this.language, "filter.all"));
+        const all = node("option", "", t(this.language, "filter.all"));
         all.value = "";
         this.userSelect.appendChild(all);
         for (const user of options.users) {
           const rawID = user.key.replace(/^(account:|user:)/, "");
           const principal = this.principals.find((item) => item.userId === rawID || item.serviceUserId === rawID);
           const label = principal?.name || principal?.email || user.label;
-          const option = node2("option", "", label);
+          const option = node("option", "", label);
           option.value = user.key;
           this.userSelect.appendChild(option);
         }
@@ -4969,18 +3340,18 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     fillSelect(select, values, selected, setter) {
       if (!select) return;
       select.replaceChildren();
-      const all = node2("option", "", t(this.language, "filter.all"));
+      const all = node("option", "", t(this.language, "filter.all"));
       all.value = "";
       select.appendChild(all);
       for (const value of values) {
-        const option = node2("option", "", value || "—");
+        const option = node("option", "", value || "—");
         option.value = value;
         select.appendChild(option);
       }
       select.value = values.includes(selected) ? selected : "";
       if (!select.value) setter("");
     }
-    render(preserveForecast = false) {
+    render() {
       if (!this.panel) return;
       this.rangeError = this.customRangeError();
       this.renderChrome();
@@ -4989,11 +3360,10 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.analysis = aggregateRecords(this.records, this.filters, this.range.from, this.range.to, this.range.bucketMs);
       this.renderStatus();
       this.renderError();
-      this.renderOverview(preserveForecast);
+      this.renderOverview();
       this.renderCharts();
       this.renderRequests();
       if (this.activeTab === "data") this.renderData();
-      if (this.activeTab === "forecast" && !preserveForecast) this.renderForecast();
     }
     renderStatus() {
       if (!this.statusDot || !this.statusText) return;
@@ -5027,14 +3397,14 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.errorBox.classList.toggle("ocgo-hidden", !message);
       this.errorBox.textContent = message;
     }
-    renderOverview(preserveForecast = false) {
+    renderOverview() {
       if (!this.cards || !this.analysis) return;
       const summary = this.analysis.summary;
       this.cards.replaceChildren();
       const card = (label, value, sub, tone = "") => {
-        const element = node2("div", `ocgo-card ${tone}`.trim());
-        element.append(node2("div", "ocgo-card-label", label), node2("div", "ocgo-card-value", value));
-        if (sub) element.appendChild(node2("div", "ocgo-card-sub", sub));
+        const element = node("div", `ocgo-card ${tone}`.trim());
+        element.append(node("div", "ocgo-card-label", label), node("div", "ocgo-card-value", value));
+        if (sub) element.appendChild(node("div", "ocgo-card-sub", sub));
         return element;
       };
       const success = formatPercent(summary.successRate);
@@ -5063,56 +3433,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (this.overviewLegacyNote) {
         this.overviewLegacyNote.style.display = this.records.some((record) => record.legacy) ? "" : "none";
       }
-      if (!preserveForecast) this.renderOverviewForecast();
       this.renderModelTable(this.overviewModels, this.analysis.models);
-    }
-    renderOverviewForecast() {
-      const section = this.overviewForecastSection;
-      const panel2 = this.overviewForecastPanel;
-      if (!section || !panel2) return;
-      section.hidden = !this.experimentalForecast;
-      if (!this.experimentalForecast) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        return;
-      }
-      if (this.forecastLoading) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderLoading(this.language);
-        return;
-      }
-      if (this.forecastError) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderError(this.language, this.forecastError, () => void this.loadForecast(true));
-        return;
-      }
-      if (!this.workspaceID) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderEmpty(this.language, t(this.language, "error.workspace"), t(this.language, "forecast.emptyHint"));
-        return;
-      }
-      const result = this.currentForecastResult();
-      if (!result) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderEmpty(this.language);
-        return;
-      }
-      this.forecastResult = result;
-      if (!result.models.length) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderEmpty(this.language, t(this.language, "forecast.noConsumedModels"), t(this.language, "forecast.emptyHint"));
-        return;
-      }
-      const model = result.models.find((item) => item.model === this.filters.model) ?? result.riskiest ?? result.models[0];
-      if (!model) {
-        if (this.overviewForecastModel) this.overviewForecastModel.textContent = "";
-        panel2.renderEmpty(this.language);
-        return;
-      }
-      if (this.overviewForecastModel) {
-        const role = this.filters.model ? t(this.language, "forecast.selectedModel") : t(this.language, "forecast.riskiest");
-        this.overviewForecastModel.textContent = `${model.displayName} · ${role}`;
-      }
-      panel2.renderSummaryCards(result, this.filters.model, this.language);
     }
     renderCharts() {
       if (!this.analysis) return;
@@ -5153,9 +3474,9 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         container.appendChild(this.empty(t(this.language, "table.emptyHint"), "table.empty"));
         return;
       }
-      const table = node2("table", "ocgo-table");
-      const head = node2("thead");
-      const headRow = node2("tr");
+      const table = node("table", "ocgo-table");
+      const head = node("thead");
+      const headRow = node("tr");
       const columns = [
         ["table.model", "left"],
         ["table.provider", "left"],
@@ -5167,24 +3488,24 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         ["table.tpsAvg", ""],
         ["table.cost", ""]
       ];
-      for (const [key, align] of columns) headRow.appendChild(node2("th", align, t(this.language, key)));
+      for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
       head.appendChild(headRow);
-      const body = node2("tbody");
+      const body = node("tbody");
       for (const model of visibleModels) {
-        const row = node2("tr");
-        const totalTokens = node2("td", "ocgo-metric-hover", formatCompact(model.totalTokens));
-        const cost = node2("td", "ocgo-metric-hover", formatUsd(model.costUsd));
+        const row = node("tr");
+        const totalTokens = node("td", "ocgo-metric-hover", formatCompact(model.totalTokens));
+        const cost = node("td", "ocgo-metric-hover", formatUsd(model.costUsd));
         this.bindModelMetricTooltip(totalTokens, model, "tokens");
         this.bindModelMetricTooltip(cost, model, "cost");
         row.append(
-          node2("td", "left", model.model),
-          node2("td", "left", model.provider || "—"),
-          node2("td", "", formatNumber(model.requests)),
+          node("td", "left", model.model),
+          node("td", "left", model.provider || "—"),
+          node("td", "", formatNumber(model.requests)),
           totalTokens,
-          node2("td", "", formatPercent(model.successRate, 1)),
-          node2("td", "", formatPercent(model.cacheHitRate, 2)),
-          node2("td", "", formatMs(model.ttftAvg)),
-          node2("td", "", formatTps(model.tpsAvg)),
+          node("td", "", formatPercent(model.successRate, 1)),
+          node("td", "", formatPercent(model.cacheHitRate, 2)),
+          node("td", "", formatMs(model.ttftAvg)),
+          node("td", "", formatTps(model.tpsAvg)),
           cost
         );
         body.appendChild(row);
@@ -5257,9 +3578,9 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (!pageRecords.length) {
         this.requestsTable.appendChild(this.empty(t(this.language, "table.emptyHint"), "table.empty"));
       } else {
-        const table = node2("table", "ocgo-table");
-        const head = node2("thead");
-        const headRow = node2("tr");
+        const table = node("table", "ocgo-table");
+        const head = node("thead");
+        const headRow = node("tr");
         const columns = [
           ["table.time", "left"],
           ["table.status", "left"],
@@ -5275,22 +3596,22 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
           ["table.user", "left"],
           ["table.open", ""]
         ];
-        for (const [key, align] of columns) headRow.appendChild(node2("th", align, t(this.language, key)));
+        for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
         head.appendChild(headRow);
-        const body = node2("tbody");
+        const body = node("tbody");
         for (const record of pageRecords) {
-          const row = node2("tr");
-          const status = node2("td", "left");
-          status.appendChild(node2("span", `ocgo-pill ${record.outcome}`, t(this.language, `badge.${record.outcome}`)));
+          const row = node("tr");
+          const status = node("td", "left");
+          status.appendChild(node("span", `ocgo-pill ${record.outcome}`, t(this.language, `badge.${record.outcome}`)));
           if (record.legacy) {
-            const legacy = node2("span", "ocgo-pill legacy", t(this.language, "badge.legacy"));
+            const legacy = node("span", "ocgo-pill legacy", t(this.language, "badge.legacy"));
             legacy.style.marginLeft = "4px";
             status.appendChild(legacy);
           }
           const user = this.principalLabel(record);
-          const detail = node2("td");
+          const detail = node("td");
           if (!record.legacy && record.startedAt >= Date.now() - RETENTION_DAYS * 864e5) {
-            const link = node2("a", "", "↗");
+            const link = node("a", "", "↗");
             link.href = `${location.origin}/console/${record.workspaceID}/logs?range=30d&category=inference&log=${encodeURIComponent(record.id)}`;
             link.target = "_blank";
             link.rel = "noreferrer";
@@ -5301,18 +3622,18 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
             detail.textContent = "—";
           }
           row.append(
-            node2("td", "left", formatDateTime(record.startedAt)),
+            node("td", "left", formatDateTime(record.startedAt)),
             status,
-            node2("td", "left", record.model || record.requestedModel || "—"),
-            node2("td", "left", record.provider || "—"),
-            node2("td", "", formatMs(computeTtft(record))),
-            node2("td", "", formatTps(computeTps(record))),
-            node2("td", "", formatCompact(record.inputTokens)),
-            node2("td", "", formatCompact(record.cacheReadTokens)),
-            node2("td", "", formatCompact(record.cacheWriteTokens + record.cacheWrite1hTokens)),
-            node2("td", "", formatCompact(record.outputTokens)),
-            node2("td", "", formatUsd(record.costUsd)),
-            node2("td", "left", user),
+            node("td", "left", record.model || record.requestedModel || "—"),
+            node("td", "left", record.provider || "—"),
+            node("td", "", formatMs(computeTtft(record))),
+            node("td", "", formatTps(computeTps(record))),
+            node("td", "", formatCompact(record.inputTokens)),
+            node("td", "", formatCompact(record.cacheReadTokens)),
+            node("td", "", formatCompact(record.cacheWriteTokens + record.cacheWrite1hTokens)),
+            node("td", "", formatCompact(record.outputTokens)),
+            node("td", "", formatUsd(record.costUsd)),
+            node("td", "left", user),
             detail
           );
           body.appendChild(row);
@@ -5321,7 +3642,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         this.requestsTable.appendChild(table);
       }
       this.requestPager.replaceChildren();
-      const info = node2("span", "", t(this.language, "table.page", { page: this.requestPage, pages }));
+      const info = node("span", "", t(this.language, "table.page", { page: this.requestPage, pages }));
       const previous = button(t(this.language, "table.prev"));
       previous.disabled = this.requestPage <= 1;
       previous.addEventListener("click", () => {
@@ -5338,12 +3659,11 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     }
     renderData() {
       if (!this.dataInfo || !this.dataActions) return;
-      if (this.experimentalCheckbox) this.experimentalCheckbox.checked = this.experimentalForecast;
       this.dataInfo.replaceChildren();
       const state = this.syncState;
-      const info = node2("dl", "ocgo-kv");
+      const info = node("dl", "ocgo-kv");
       const add = (label, value) => {
-        info.append(node2("dt", "", label), node2("dd", "", value));
+        info.append(node("dt", "", label), node("dd", "", value));
       };
       const workspace = this.workspaces.find((item) => item.id === this.workspaceID);
       add(t(this.language, "data.workspace"), workspace ? `${workspace.name} (${workspace.id})` : this.workspaceID || "—");
@@ -5361,16 +3681,16 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       }
       this.dataInfo.appendChild(info);
       if (!state?.backfillComplete && this.workspaceID) {
-        this.dataInfo.appendChild(node2("div", "ocgo-warning", t(this.language, "status.partial")));
+        this.dataInfo.appendChild(node("div", "ocgo-warning", t(this.language, "status.partial")));
       }
       if (state?.gapDetected) {
-        this.dataInfo.appendChild(node2("div", "ocgo-warning", t(this.language, "status.gap", { n: state.retentionDays || RETENTION_DAYS })));
+        this.dataInfo.appendChild(node("div", "ocgo-warning", t(this.language, "status.gap", { n: state.retentionDays || RETENTION_DAYS })));
       }
       if (this.records.some((record) => record.legacy)) {
-        this.dataInfo.appendChild(node2("p", "ocgo-note", t(this.language, "legacy.note")));
+        this.dataInfo.appendChild(node("p", "ocgo-note", t(this.language, "legacy.note")));
       }
-      this.dataInfo.appendChild(node2("p", "ocgo-note", t(this.language, "data.privacy")));
-      const storageNote = node2("p", "ocgo-note");
+      this.dataInfo.appendChild(node("p", "ocgo-note", t(this.language, "data.privacy")));
+      const storageNote = node("p", "ocgo-note");
       this.storageNote = storageNote;
       this.dataInfo.appendChild(storageNote);
       this.dataActions.replaceChildren();
@@ -5405,13 +3725,13 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       if (!this.pricingPanel) return;
       this.pricingPanel.replaceChildren();
       if (!this.pricing) {
-        this.pricingPanel.appendChild(node2(
+        this.pricingPanel.appendChild(node(
           "p",
           "ocgo-note",
           t(this.language, this.pricingLoading ? "data.pricingLoading" : "data.pricingEmpty")
         ));
         if (this.pricingError && !this.pricingLoading) {
-          this.pricingPanel.appendChild(node2("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
+          this.pricingPanel.appendChild(node("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
         }
         return;
       }
@@ -5423,24 +3743,24 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         return (a.minContextTokens ?? 0) - (b.minContextTokens ?? 0);
       });
       const modelCount = new Set(tiers.map((tier) => tier.modelID)).size;
-      const meta = node2("div", "ocgo-pricing-meta");
-      meta.appendChild(node2("span", "", t(this.language, "data.pricingMeta", {
+      const meta = node("div", "ocgo-pricing-meta");
+      meta.appendChild(node("span", "", t(this.language, "data.pricingMeta", {
         time: formatDateTime(this.pricing.fetchedAt),
         n: modelCount
       })));
-      const source = node2("a", "", t(this.language, "data.pricingSource"));
+      const source = node("a", "", t(this.language, "data.pricingSource"));
       source.href = this.pricing.source;
       source.target = "_blank";
       source.rel = "noreferrer";
       meta.appendChild(source);
       this.pricingPanel.appendChild(meta);
       if (this.pricingError) {
-        this.pricingPanel.appendChild(node2("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
+        this.pricingPanel.appendChild(node("p", "ocgo-warning", t(this.language, "data.pricingError", { error: this.pricingError })));
       }
-      const wrap = node2("div", "ocgo-table-wrap ocgo-pricing-table-wrap");
-      const table = node2("table", "ocgo-table ocgo-pricing-table");
-      const head = node2("thead");
-      const headRow = node2("tr");
+      const wrap = node("div", "ocgo-table-wrap ocgo-pricing-table-wrap");
+      const table = node("table", "ocgo-table ocgo-pricing-table");
+      const head = node("thead");
+      const headRow = node("tr");
       const columns = [
         ["data.pricingModel", "left"],
         ["data.pricingPeriod", "left"],
@@ -5450,23 +3770,23 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         ["data.pricingCacheRead", ""],
         ["data.pricingCacheWrite", ""]
       ];
-      for (const [key, align] of columns) headRow.appendChild(node2("th", align, t(this.language, key)));
+      for (const [key, align] of columns) headRow.appendChild(node("th", align, t(this.language, key)));
       head.appendChild(headRow);
-      const body = node2("tbody");
+      const body = node("tbody");
       for (const tier of tiers) {
         const period = tier.period ? t(this.language, tier.period === "peak" ? "data.pricingPeak" : "data.pricingOffPeak") : t(this.language, "data.pricingAllDay");
         const context = tier.maxContextTokens !== void 0 ? `≤ ${formatCompact(tier.maxContextTokens)}` : tier.minContextTokens !== void 0 ? `> ${formatCompact(Math.max(0, tier.minContextTokens - 1))}` : t(this.language, "data.pricingAllContext");
-        const periodCell = node2("td", "left");
-        periodCell.appendChild(node2("span", `ocgo-price-period ${tier.period ?? "all"}`, period));
-        const row = node2("tr");
+        const periodCell = node("td", "left");
+        periodCell.appendChild(node("span", `ocgo-price-period ${tier.period ?? "all"}`, period));
+        const row = node("tr");
         row.append(
-          node2("td", "left", tier.displayName),
+          node("td", "left", tier.displayName),
           periodCell,
-          node2("td", "left", context),
-          node2("td", "", formatUsd(tier.input)),
-          node2("td", "", formatUsd(tier.output)),
-          node2("td", "", formatUsd(tier.cacheRead)),
-          node2("td", "", formatUsd(tier.cacheWrite))
+          node("td", "left", context),
+          node("td", "", formatUsd(tier.input)),
+          node("td", "", formatUsd(tier.output)),
+          node("td", "", formatUsd(tier.cacheRead)),
+          node("td", "", formatUsd(tier.cacheWrite))
         );
         body.appendChild(row);
       }
@@ -5484,20 +3804,20 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       }
       const formatter = new Intl.DateTimeFormat(void 0, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
       for (const entry of entries) {
-        const row = node2("div", "ocgo-log-row");
+        const row = node("div", "ocgo-log-row");
         row.append(
-          node2("span", "ocgo-log-time", formatter.format(new Date(entry.time))),
-          node2("span", `ocgo-log-level ${entry.level}`, t(this.language, `log.level.${entry.level}`)),
-          node2("span", "ocgo-log-msg", formatLogEntry(entry, this.language))
+          node("span", "ocgo-log-time", formatter.format(new Date(entry.time))),
+          node("span", `ocgo-log-level ${entry.level}`, t(this.language, `log.level.${entry.level}`)),
+          node("span", "ocgo-log-msg", formatLogEntry(entry, this.language))
         );
         this.logList.appendChild(row);
       }
       this.logList.scrollTop = this.logList.scrollHeight;
     }
     empty(message, titleKey = "empty.title") {
-      const empty = node2("div", "ocgo-empty");
-      const strong = node2("strong", "", t(this.language, titleKey));
-      const description = node2("span", "", message);
+      const empty = node("div", "ocgo-empty");
+      const strong = node("strong", "", t(this.language, titleKey));
+      const description = node("span", "", message);
       empty.append(strong, description);
       return empty;
     }
@@ -5509,7 +3829,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         return;
       }
       this.workspaceID = workspaceID;
-      this.resetForecast();
       this.principals = [];
       this.errorMessage = workspaceID ? "" : t(this.language, "error.workspace");
       this.requestPage = 1;
@@ -5534,7 +3853,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
           this.logger.warn("log.migrationSkipped", { error: error instanceof Error ? error.message : String(error) });
         }
         await this.reloadRecords();
-        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
         void this.refreshWorkspaces();
         void this.refreshPrincipals();
         if (this.open) window.setTimeout(() => this.autoSyncIfStale(), 200);
@@ -5583,14 +3901,14 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
         }
       }
     }
-    async reloadRecords(preserveForecast = false) {
+    async reloadRecords() {
       const loadSeq = ++this.rangeLoadSeq;
       const workspaceID = this.workspaceID;
       if (!workspaceID) {
         this.records = [];
         this.totalRecordCount = 0;
         this.syncState = void 0;
-        this.render(preserveForecast);
+        this.render();
         return;
       }
       const range = this.currentRange();
@@ -5603,7 +3921,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       this.records = records;
       this.totalRecordCount = totalRecordCount;
       this.syncState = syncState;
-      this.render(preserveForecast);
+      this.render();
       void this.ensurePricing();
     }
     sync(full) {
@@ -5639,9 +3957,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
             this.renderStatus();
           }
         });
-        await this.reloadRecords(true);
-        this.forecastStale = true;
-        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
+        await this.reloadRecords();
         this.logger.info(result.cacheHit ? "log.syncCached" : "log.syncComplete", {
           fetched: result.fetched,
           added: result.added,
@@ -5655,9 +3971,7 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
           this.setError(error);
           this.logger.error("log.error", { error: error instanceof Error ? error.message : String(error) });
         }
-        await this.reloadRecords(true);
-        this.forecastStale = true;
-        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
+        await this.reloadRecords();
       } finally {
         this.busy = false;
         this.progress = void 0;
@@ -5687,11 +4001,9 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
     handleCaptured(workspaceID, count) {
       this.logger.info("status.captured", { n: count });
       if (workspaceID !== this.workspaceID) return;
-      this.forecastStale = true;
       if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
       this.refreshTimer = window.setTimeout(() => {
-        void this.reloadRecords(true);
-        if (this.open && (this.activeTab === "forecast" || this.activeTab === "overview")) void this.loadForecast(false);
+        void this.reloadRecords();
       }, 300);
     }
     setError(error) {
@@ -5807,7 +4119,6 @@ select:focus, input:focus { border-color: rgba(118,152,253,.75); }
       }));
       this.records = [];
       this.totalRecordCount = 0;
-      this.resetForecast();
       this.syncState = await getSyncState(this.workspaceID);
       this.requestPage = 1;
       this.logger.warn("log.historyCleared");

@@ -2,11 +2,11 @@
   <img src="image/README/OpenCodeGo-Dashboard-banner.svg" width="100%" alt="OpenCodeGo 仪表盘助手 Banner" />
 </p>
 
-# OpenCodeGo 仪表盘助手（油猴脚本）v1.3.0
+# OpenCodeGo 仪表盘助手（油猴脚本）v1.4.0
 
 中文 | **[English](README.md)**
 
-OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/) 上增加一块悬浮仪表盘，集中展示请求性能、OpenCode Go 使用情况和可选的使用量预测。
+OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/) 上增加一块悬浮仪表盘，集中展示请求性能和 OpenCode Go 使用情况。
 
 ## 界面截图
 
@@ -17,10 +17,6 @@ OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/
 ### 趋势图
 
 ![趋势图](image/README/charts.zh-CN.png)
-
-### 用量预测
-
-![用量预测](image/README/usage-forecast.zh-CN.png)
 
 ## 功能
 
@@ -33,9 +29,7 @@ OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/
 - 模型表展示总 Token 和费用，支持悬浮查看费用组成。费用按 OpenCode Go 单价估算。
 - “同步与数据”页展示模型价格缓存、高峰 / 空闲时段、上下文档位、浏览器存储、诊断日志和导出操作。
 - 本地 IndexedDB 归档长期保存精简后的请求指标，不受 Console 30 天日志保留期限制。
-- 可选 Beta 用量预测默认关闭。开启后概览增加预测摘要，并出现“用量预测”标签；其中包含可选择的模型、5 小时、未来 24 小时、每周和每月卡片、可切换窗口的预测曲线，以及按模型汇总的用量与限额表。
-- 用量预测按模型独立计算：每月上限为 `M`，每周上限为 `M / 2`，5 小时上限为 `M / 5`。未来 24 小时是预测跨度，不是限额窗口。
-- 支持中文和英文界面，并记忆筛选、时间范围、当前标签、语言、预测开关、面板尺寸、按钮位置和图表缩放。
+- 支持中文和英文界面，并记忆筛选、时间范围、当前标签、语言、面板尺寸、按钮位置和图表缩放。
 
 
 ## 数据来源与兼容性
@@ -45,7 +39,6 @@ OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/
 - `GET /console/api/user/workspaces`
 - `GET /console/api/request-logs?category=inference&since=...&limit=50...`
 - `GET /console/api/usage/users?range=30d&page=...&pageSize=100&costOrder=desc`
-- `GET /console/api/go/status`
 - `GET /v2/docs/console/go/`
 
 请求日志接口需要当前工作区的 `x-org-id`，并依赖 `opencode.ai` 的会话 Cookie。脚本还会监听 Console 自己发出的同源推理请求日志响应，保存其中带 `wrk_` 工作区标识的记录；打开官方日志页即可直接补充本地数据，不需要重复请求。
@@ -63,19 +56,6 @@ OpenCodeGo 仪表盘助手会在 [OpenCode Console](https://opencode.ai/console/
 - 每次同步完成后显示新增数量或“已是最新”。
 
 如果超过 30 天没有打开 Console，缺失期间的数据无法再从官方接口补回，面板会显示历史缺口。
-
-## 用量预测
-
-Beta 用量预测使用当前工作区的全部本地历史、OpenCode Go 价格缓存和 Go 用量限制状态，并应用当前模型、提供商和成员 / 服务账号筛选。
-
-- 每个模型的用量独立评估，不把不同模型的限额相加。
-- 5 小时、每周和每月窗口优先使用官方重置时间，否则使用 UTC 或尾随窗口估算。
-- 曲线展示历史累计用量、p50 预测、p10–p90 预测区间、当前时刻和限额重置点。
-- 风险最高模型是 5 小时、每周和每月三个窗口中最高 p90 利用率最大的模型。
-- 缺少官方状态、历史过短、同步缺口、价格缓存过期或未定价请求超过 5% 时，置信度会降低。
-
-
-预测结果仅供估算，图一乐。
 
 ## 本地数据
 

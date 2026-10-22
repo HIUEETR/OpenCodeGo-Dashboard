@@ -1,17 +1,15 @@
 import { getMeta, putMeta } from './storage';
 import type {
   CostBreakdown,
-  GoPlan,
   GoPricingCache,
   GoPricingTier,
-  GoQuotaLimits,
   ModelSummary,
   RequestRecord,
 } from './types';
 
 export const GO_PRICING_URL = 'https://opencode.ai/v2/docs/console/go/';
 export const GO_PRICING_CACHE_KEY = 'pricing:opencode-go';
-export const GO_PRICING_SCHEMA_VERSION = 2;
+export const GO_PRICING_SCHEMA_VERSION = 1;
 export const GO_PRICING_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
 
@@ -19,11 +17,6 @@ export interface PricingLoadResult {
   pricing?: GoPricingCache;
   refreshed: boolean;
   error?: string;
-}
-
-export interface GoPricingParseResult {
-  tiers: GoPricingTier[];
-  quotaLimits: GoQuotaLimits;
 }
 
 function normalized(value: string): string {
@@ -34,16 +27,6 @@ function tableHeaders(table: HTMLTableElement): string[] {
   return [...table.querySelectorAll('thead th')].map((cell) => normalized(cell.textContent ?? ''));
 }
 
-function isPricingTable(table: HTMLTableElement): boolean {
-  const headers = tableHeaders(table);
-  return headers.includes('model')
-    && headers.includes('input')
-    && headers.includes('output')
-    && headers.includes('cached read')
-    && headers.includes('cached write')
-    && headers.includes('monthly limit');
-}
-
 function parsePrice(value: string): number | null {
   const text = value.replace(/,/g, '').trim();
   if (!text || text === '-') return null;
@@ -52,12 +35,6 @@ function parsePrice(value: string): number | null {
   if (!match) return null;
   const amount = Number(match[0]);
   return Number.isFinite(amount) && amount >= 0 ? amount : null;
-}
-
-function parseMonthlyLimit(cell: HTMLTableCellElement): number | null {
-  const strong = [...cell.querySelectorAll('strong')].at(-1)?.textContent ?? cell.textContent ?? '';
-  if (/unlimited|free/i.test(strong)) return null;
-  return parsePrice(strong);
 }
 
 function parseContextMarker(label: string): {
@@ -92,19 +69,22 @@ function parseContextMarker(label: string): {
   return { displayName, maxContextTokens, minContextTokens, period };
 }
 
-function emptyQuotaLimits(): GoQuotaLimits {
-  return { go: {}, 'go-plus': {} };
-}
-
-export function parseGoPricingHtml(html: string): GoPricingParseResult {
+export function parseGoPricingHtml(html: string): GoPricingTier[] {
   const document = new DOMParser().parseFromString(html, 'text/html');
   const tables = [...document.querySelectorAll('table')] as HTMLTableElement[];
-  const pricingTables = tables.filter(isPricingTable);
+  const pricingTable = tables.find((table) => {
+    const headers = tableHeaders(table);
+    return headers.includes('model')
+      && headers.includes('input')
+      && headers.includes('output')
+      && headers.includes('cached read')
+      && headers.includes('cached write');
+  });
   const endpointTable = tables.find((table) => {
     const headers = tableHeaders(table);
     return headers.includes('model') && headers.includes('model id');
   });
-  if (!pricingTables.length || !endpointTable) {
+  if (!pricingTable || !endpointTable) {
     throw new Error('Go pricing tables were not found.');
   }
 
@@ -117,62 +97,32 @@ export function parseGoPricingHtml(html: string): GoPricingParseResult {
     if (name && modelID) modelIDs.set(name, modelID);
   }
 
-  const planTables = new Map<GoPlan, HTMLTableElement>();
-  for (const panel of [...document.querySelectorAll<HTMLElement>('[data-plan-panel]')]) {
-    const plan = panel.dataset.planPanel;
-    if (plan !== 'go' && plan !== 'go-plus') continue;
-    const table = [...panel.querySelectorAll('table')].find((candidate) => isPricingTable(candidate as HTMLTableElement));
-    if (table) planTables.set(plan, table as HTMLTableElement);
-  }
-  const remaining = pricingTables.filter((table) => ![...planTables.values()].includes(table));
-  if (!planTables.has('go') && remaining.length) planTables.set('go', remaining.shift()!);
-  if (!planTables.has('go-plus') && remaining.length) planTables.set('go-plus', remaining.shift()!);
-
-  const quotaLimits = emptyQuotaLimits();
   const tiers: GoPricingTier[] = [];
-  const seenTiers = new Set<string>();
-  for (const [plan, pricingTable] of planTables) {
-    for (const row of [...pricingTable.querySelectorAll('tbody tr')]) {
-      const cells = [...row.querySelectorAll('td')] as HTMLTableCellElement[];
-      if (cells.length < 6) continue;
-      const rawName = (cells[0].textContent ?? '').replace(/\s+/g, ' ').trim();
-      const marker = parseContextMarker(rawName);
-      const modelID = modelIDs.get(normalized(marker.displayName));
-      if (!modelID) continue;
-      quotaLimits[plan][modelID] = parseMonthlyLimit(cells[5]);
-
-      if (plan !== 'go') continue;
-      const input = parsePrice(cells[1].textContent ?? '');
-      const output = parsePrice(cells[2].textContent ?? '');
-      if (input === null || output === null) continue;
-      const tier: GoPricingTier = {
-        modelID,
-        displayName: marker.displayName,
-        input,
-        output,
-        cacheRead: parsePrice(cells[3].textContent ?? ''),
-        cacheWrite: parsePrice(cells[4].textContent ?? ''),
-        ...(marker.maxContextTokens === undefined ? {} : { maxContextTokens: marker.maxContextTokens }),
-        ...(marker.minContextTokens === undefined ? {} : { minContextTokens: marker.minContextTokens }),
-        ...(marker.period === undefined ? {} : { period: marker.period }),
-      };
-      const key = [
-        tier.modelID,
-        tier.period ?? '',
-        tier.minContextTokens ?? '',
-        tier.maxContextTokens ?? '',
-        tier.input,
-        tier.output,
-      ].join('|');
-      if (!seenTiers.has(key)) {
-        seenTiers.add(key);
-        tiers.push(tier);
-      }
-    }
+  for (const row of [...pricingTable.querySelectorAll('tbody tr')]) {
+    const cells = [...row.querySelectorAll('td')];
+    if (cells.length < 5) continue;
+    const rawName = (cells[0].textContent ?? '').replace(/\s+/g, ' ').trim();
+    const marker = parseContextMarker(rawName);
+    const modelID = modelIDs.get(normalized(marker.displayName));
+    if (!modelID) continue;
+    const input = parsePrice(cells[1].textContent ?? '');
+    const output = parsePrice(cells[2].textContent ?? '');
+    if (input === null || output === null) continue;
+    tiers.push({
+      modelID,
+      displayName: marker.displayName,
+      input,
+      output,
+      cacheRead: parsePrice(cells[3].textContent ?? ''),
+      cacheWrite: parsePrice(cells[4].textContent ?? ''),
+      ...(marker.maxContextTokens === undefined ? {} : { maxContextTokens: marker.maxContextTokens }),
+      ...(marker.minContextTokens === undefined ? {} : { minContextTokens: marker.minContextTokens }),
+      ...(marker.period === undefined ? {} : { period: marker.period }),
+    });
   }
 
   if (!tiers.length) throw new Error('No valid Go pricing rows were parsed.');
-  return { tiers, quotaLimits };
+  return tiers;
 }
 
 export function isGoPricingCacheFresh(cache: GoPricingCache | undefined, now = Date.now()): boolean {
@@ -180,7 +130,6 @@ export function isGoPricingCacheFresh(cache: GoPricingCache | undefined, now = D
     cache
     && cache.schemaVersion === GO_PRICING_SCHEMA_VERSION
     && cache.tiers.length > 0
-    && cache.quotaLimits
     && now - cache.fetchedAt >= 0
     && now - cache.fetchedAt < GO_PRICING_TTL_MS,
   );
@@ -199,13 +148,12 @@ export async function loadGoPricing(now = Date.now()): Promise<PricingLoadResult
       headers: { Accept: 'text/html' },
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const parsed = parseGoPricingHtml(await response.text());
+    const tiers = parseGoPricingHtml(await response.text());
     const pricing: GoPricingCache = {
       fetchedAt: now,
       source: GO_PRICING_URL,
       schemaVersion: GO_PRICING_SCHEMA_VERSION,
-      tiers: parsed.tiers,
-      quotaLimits: parsed.quotaLimits,
+      tiers,
     };
     await putMeta(GO_PRICING_CACHE_KEY, pricing);
     return { pricing, refreshed: true };
@@ -255,29 +203,6 @@ export function selectPricingTier(
     .filter((tier) => tier.maxContextTokens === undefined || contextTokens <= tier.maxContextTokens);
   if (!matching.length) return undefined;
   return matching.sort((a, b) => (a.maxContextTokens ?? Number.MAX_SAFE_INTEGER) - (b.maxContextTokens ?? Number.MAX_SAFE_INTEGER))[0];
-}
-
-export function quotaLimitsForModel(
-  pricing: GoPricingCache | undefined,
-  plan: GoPlan,
-  modelID: string,
-): number | null | undefined {
-  if (!pricing) return undefined;
-  const id = normalizeGoModelID(modelID);
-  const limits = pricing.quotaLimits?.[plan];
-  if (!limits || !Object.prototype.hasOwnProperty.call(limits, id)) return undefined;
-  return limits[id];
-}
-
-export function quotaUsdForRecord(record: RequestRecord, tier: GoPricingTier | undefined): number | null {
-  if (!tier) return null;
-  const cacheWriteTokens = record.cacheWriteTokens + record.cacheWrite1hTokens;
-  return (
-    record.inputTokens * tier.input / TOKENS_PER_PRICE_UNIT
-    + record.outputTokens * tier.output / TOKENS_PER_PRICE_UNIT
-    + record.cacheReadTokens * (tier.cacheRead ?? 0) / TOKENS_PER_PRICE_UNIT
-    + cacheWriteTokens * (tier.cacheWrite ?? 0) / TOKENS_PER_PRICE_UNIT
-  );
 }
 
 export function estimateModelCostBreakdown(

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
   <title id="title">OpenCodeGo Dashboard Assistant · GitHub README Banner</title>
-  <desc id="desc">Dark animated SVG banner for the OpenCodeGo Dashboard Assistant userscript: request analytics, cache hit rate, TTFT, output TPS, usage forecasting and a local archive.</desc>
+  <desc id="desc">Dark animated SVG banner for the OpenCodeGo Dashboard Assistant userscript: request analytics, cache hit rate, TTFT, output TPS and a local archive.</desc>
 
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -90,8 +90,8 @@
       <text x="45" y="148" fill="#8d97a4">local records</text>
       <text x="138" y="148" fill="#e4e8ed">12,017</text>
       <text x="24" y="168" fill="#606a76">05</text>
-      <text x="45" y="168" fill="#8d97a4">usage forecast</text>
-      <text x="138" y="168" fill="#e4e8ed">57.6%</text>
+      <text x="45" y="168" fill="#8d97a4">success rate</text>
+      <text x="138" y="168" fill="#e4e8ed">99.2%</text>
     </g>
 
     <!-- animated chart -->
@@ -137,7 +137,7 @@
           fill="#89929e"
           font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"
           font-size="15" letter-spacing=".2">
-      REQUESTS · CACHE · TTFT · TPS · USAGE FORECAST
+      REQUESTS · CACHE · TTFT · TPS · LOCAL ARCHIVE
     </text>
 
     <!-- animated command cursor -->
@@ -149,7 +149,7 @@
     <circle cx="5" cy="-4" r="4" fill="#dfe4e9">
       <animate attributeName="opacity" values=".25;1;.25" dur="2s" repeatCount="indefinite"/>
     </circle>
-    <text x="18" fill="#7f8995">REQUESTS · CACHE HIT · TTFT · TPS · USAGE FORECAST · LOCAL ARCHIVE</text>
+    <text x="18" fill="#7f8995">REQUESTS · CACHE HIT · TTFT · TPS · LOCAL ARCHIVE</text>
   </g>
 
   <!-- border -->
